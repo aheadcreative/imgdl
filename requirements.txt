@@ -1,0 +1,7 @@
+Pillow
+requests
+ddgs
+tqdm
+pyyaml
+openpyxl
+flask

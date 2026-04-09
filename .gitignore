@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+downloads/
+.DS_Store
+.imgdl.yaml
+.imgdl.yml
+test_multi.csv
+test_multi.xlsx
+.claude/

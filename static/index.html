@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>imgdl — Image Downloader</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .drop-zone.dragover { border-color: #6366f1; background: #eef2ff; }
+    .fade-in { animation: fadeIn 0.3s ease-in; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
+    .checker-bg {
+      background-image: url('data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2216%22 height=%2216%22><rect width=%228%22 height=%228%22 fill=%22%23f0f0f0%22/><rect x=%228%22 y=%228%22 width=%228%22 height=%228%22 fill=%22%23f0f0f0%22/></svg>');
+    }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+  <!-- Header -->
+  <header class="bg-white border-b border-gray-200 sticky top-0 z-10">
+    <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+      <div>
+        <h1 class="text-xl font-semibold text-gray-900">imgdl</h1>
+        <p class="text-sm text-gray-500">Download, resize, and save images from text descriptions</p>
+      </div>
+      <div class="flex gap-2">
+        <button onclick="switchTab('single')" id="tab-single"
+                class="tab-btn px-4 py-2 rounded-lg text-sm font-medium bg-indigo-50 text-indigo-700">
+          Single Query
+        </button>
+        <button onclick="switchTab('batch')" id="tab-batch"
+                class="tab-btn px-4 py-2 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100">
+          Batch Upload
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-6xl mx-auto px-6 py-8">
+
+    <!-- Single Query Tab -->
+    <div id="panel-single">
+      <form id="single-form" class="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Query or URL</label>
+          <input type="text" name="query" required placeholder='e.g. "Anthropic logo" or https://...'
+                 class="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-sm">
+        </div>
+
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Size</label>
+            <input type="text" name="size" id="single-size" value="300x300" placeholder="WxH"
+                   class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Type</label>
+            <select name="type" id="single-type" onchange="onTypeChange('single')"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+              <option value="">None</option>
+              <option value="logo" selected>Logo</option>
+              <option value="bottle">Wine Bottle</option>
+              <option value="wine">Wine</option>
+              <option value="product">Product</option>
+              <option value="icon">Icon</option>
+              <option value="label">Label</option>
+              <option value="product photo">Product Photo</option>
+              <option value="headshot">Headshot</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Background</label>
+            <select name="background" class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+              <option value="">Default</option>
+              <option value="transparent" selected>Transparent</option>
+              <option value="white">White</option>
+              <option value="dark">Dark</option>
+              <option value="none">None</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Format</label>
+            <select name="format" class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+              <option value="png" selected>PNG</option>
+              <option value="jpg">JPG</option>
+              <option value="webp">WebP</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Count <span id="count-val" class="text-gray-400">(1)</span></label>
+            <input type="range" name="count" min="1" max="5" value="1"
+                   oninput="document.getElementById('count-val').textContent='('+this.value+')'"
+                   class="w-full accent-indigo-600">
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Padding <span id="padding-val" class="text-gray-400">(0%)</span></label>
+            <input type="range" name="padding" min="0" max="30" value="0"
+                   oninput="document.getElementById('padding-val').textContent='('+this.value+'%)'"
+                   class="w-full accent-indigo-600">
+          </div>
+        </div>
+
+        <button type="submit" id="btn-single"
+                class="w-full bg-indigo-600 text-white py-2.5 rounded-lg font-medium hover:bg-indigo-700 transition text-sm">
+          Download
+        </button>
+      </form>
+    </div>
+
+    <!-- Batch Tab -->
+    <div id="panel-batch" class="hidden">
+      <div class="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
+
+        <!-- Sub-tabs: Paste List vs File Upload -->
+        <div class="flex gap-1 bg-gray-100 p-1 rounded-lg w-fit">
+          <button onclick="switchBatchMode('paste')" id="btab-paste"
+                  class="btab-btn px-4 py-1.5 rounded-md text-sm font-medium bg-white shadow-sm text-gray-900">
+            Paste List
+          </button>
+          <button onclick="switchBatchMode('file')" id="btab-file"
+                  class="btab-btn px-4 py-1.5 rounded-md text-sm font-medium text-gray-500">
+            Upload File
+          </button>
+        </div>
+
+        <!-- Paste List panel -->
+        <div id="bpanel-paste">
+          <label class="block text-sm font-medium text-gray-700 mb-1">Paste your list</label>
+          <textarea id="paste-text" rows="8" placeholder="Paste any list here — numbered, bulleted, with URLs, messy formatting is fine.
+
+Example:
+1. Intercom — https://www.intercom.com/
+2. Ada — https://www.ada.cx/
+3. Anthropic
+4. OpenAI"
+                    class="w-full px-4 py-3 border border-gray-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"></textarea>
+          <p class="text-xs text-gray-400 mt-1">Accepts numbered lists, bullet points, em dashes, inline URLs, reference brackets — all cleaned automatically.</p>
+        </div>
+
+        <!-- File Upload panel -->
+        <div id="bpanel-file" class="hidden space-y-4">
+          <!-- Templates -->
+          <div class="flex items-center gap-3 text-sm">
+            <span class="text-gray-600 font-medium">Download template:</span>
+            <a href="/api/template/csv" class="text-indigo-600 hover:text-indigo-800 underline">CSV</a>
+            <a href="/api/template/xlsx" class="text-indigo-600 hover:text-indigo-800 underline">XLSX</a>
+          </div>
+
+          <!-- Column reference -->
+          <details class="text-sm text-gray-500">
+            <summary class="cursor-pointer hover:text-gray-700 font-medium">Column format reference</summary>
+            <div id="col-ref" class="mt-2 bg-gray-50 rounded-lg p-4 text-xs font-mono"></div>
+          </details>
+
+          <!-- Drop zone -->
+          <div id="drop-zone"
+               class="drop-zone border-2 border-dashed border-gray-300 rounded-xl p-10 text-center cursor-pointer hover:border-gray-400 transition">
+            <input type="file" id="file-input" accept=".txt,.csv,.xlsx,.xls" class="hidden">
+            <div class="text-gray-400 mb-2">
+              <svg class="w-10 h-10 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+              </svg>
+            </div>
+            <p class="text-sm text-gray-600 font-medium">Drop a .txt, .csv, or .xlsx file here</p>
+            <p class="text-xs text-gray-400 mt-1">or click to browse</p>
+            <p id="file-name" class="text-sm text-indigo-600 font-medium mt-2 hidden"></p>
+          </div>
+        </div>
+
+        <!-- Batch defaults (shared) -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Default Size</label>
+            <input type="text" id="batch-size" value="300x300"
+                   class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Default Type</label>
+            <select id="batch-type" onchange="onTypeChange('batch')"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+              <option value="">None</option>
+              <option value="logo" selected>Logo</option>
+              <option value="bottle">Wine Bottle</option>
+              <option value="wine">Wine</option>
+              <option value="product">Product</option>
+              <option value="icon">Icon</option>
+              <option value="label">Label</option>
+              <option value="product photo">Product Photo</option>
+              <option value="headshot">Headshot</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Default Bg</label>
+            <select id="batch-bg" class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+              <option value="">Default</option>
+              <option value="transparent" selected>Transparent</option>
+              <option value="white">White</option>
+              <option value="dark">Dark</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Default Format</label>
+            <select id="batch-format" class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+              <option value="png" selected>PNG</option>
+              <option value="jpg">JPG</option>
+              <option value="webp">WebP</option>
+            </select>
+          </div>
+        </div>
+
+        <button onclick="startBatch()" id="btn-batch"
+                class="w-full bg-indigo-600 text-white py-2.5 rounded-lg font-medium hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition text-sm">
+          Download All
+        </button>
+      </div>
+    </div>
+
+    <!-- Progress -->
+    <div id="progress-section" class="hidden mt-6 bg-white rounded-xl border border-gray-200 p-6">
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-sm font-medium text-gray-700" id="progress-label">Downloading...</span>
+        <span class="text-sm text-gray-500" id="progress-count">0/0</span>
+      </div>
+      <div class="w-full bg-gray-200 rounded-full h-2">
+        <div id="progress-bar" class="bg-indigo-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+      </div>
+      <p class="text-xs text-gray-400 mt-2" id="progress-query"></p>
+    </div>
+
+    <!-- Results -->
+    <div id="results-section" class="hidden mt-6">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-gray-900">Results</h2>
+        <div id="results-stats" class="text-sm text-gray-500"></div>
+      </div>
+      <div id="results-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4"></div>
+    </div>
+
+  </main>
+
+<script>
+// Populate column reference table safely
+(function() {
+  const ref = document.getElementById('col-ref');
+  const table = document.createElement('table');
+  table.className = 'w-full';
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  headRow.className = 'text-left text-gray-600';
+  ['Column', 'Aliases', 'Example'].forEach(h => {
+    const th = document.createElement('th');
+    th.className = 'pb-1 pr-4';
+    th.textContent = h;
+    headRow.appendChild(th);
+  });
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  tbody.className = 'text-gray-500';
+  const rows = [
+    ['query', 'name, search, description', 'Anthropic logo'],
+    ['url', 'image_url, link, src', 'https://example.com/img.png'],
+    ['size', '\u2014', '300x300'],
+    ['type', 'category', 'logo, icon, label'],
+    ['background', 'bg', 'transparent, white, dark'],
+    ['format', 'fmt, ext', 'png, jpg, webp'],
+    ['filename', 'file, output_name', 'my_logo'],
+  ];
+  rows.forEach(r => {
+    const tr = document.createElement('tr');
+    r.forEach(cell => {
+      const td = document.createElement('td');
+      td.className = 'pr-4 py-0.5';
+      td.textContent = cell;
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  ref.appendChild(table);
+})();
+
+// Tab switching
+function switchTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    b.classList.remove('bg-indigo-50', 'text-indigo-700');
+    b.classList.add('text-gray-600');
+  });
+  document.getElementById('tab-' + tab).classList.add('bg-indigo-50', 'text-indigo-700');
+  document.getElementById('tab-' + tab).classList.remove('text-gray-600');
+  document.getElementById('panel-single').classList.toggle('hidden', tab !== 'single');
+  document.getElementById('panel-batch').classList.toggle('hidden', tab !== 'batch');
+}
+
+// Auto-update size and background when type changes to wine/product
+const ECOMMERCE_TYPES = new Set(['bottle', 'wine', 'product', 'product photo']);
+const SIZE_DEFAULTS = { ecommerce: '1200x1200', other: '300x300' };
+const BG_DEFAULTS = { ecommerce: 'white', other: 'transparent' };
+
+function onTypeChange(panel) {
+  const isEcom = (val) => ECOMMERCE_TYPES.has(val);
+  if (panel === 'single') {
+    const typeVal = document.getElementById('single-type').value;
+    const sizeEl = document.getElementById('single-size');
+    const bgEl = document.querySelector('#single-form select[name="background"]');
+    if (isEcom(typeVal)) {
+      sizeEl.value = SIZE_DEFAULTS.ecommerce;
+      bgEl.value = BG_DEFAULTS.ecommerce;
+    }
+  } else {
+    const typeVal = document.getElementById('batch-type').value;
+    const sizeEl = document.getElementById('batch-size');
+    const bgEl = document.getElementById('batch-bg');
+    if (isEcom(typeVal)) {
+      sizeEl.value = SIZE_DEFAULTS.ecommerce;
+      bgEl.value = BG_DEFAULTS.ecommerce;
+    }
+  }
+}
+
+// Batch sub-tab switching (paste vs file)
+let batchMode = 'paste';
+function switchBatchMode(mode) {
+  batchMode = mode;
+  document.querySelectorAll('.btab-btn').forEach(b => {
+    b.classList.remove('bg-white', 'shadow-sm', 'text-gray-900');
+    b.classList.add('text-gray-500');
+  });
+  document.getElementById('btab-' + mode).classList.add('bg-white', 'shadow-sm', 'text-gray-900');
+  document.getElementById('btab-' + mode).classList.remove('text-gray-500');
+  document.getElementById('bpanel-paste').classList.toggle('hidden', mode !== 'paste');
+  document.getElementById('bpanel-file').classList.toggle('hidden', mode !== 'file');
+}
+
+// Single query form
+document.getElementById('single-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const body = Object.fromEntries(fd.entries());
+  const btn = document.getElementById('btn-single');
+  btn.disabled = true; btn.textContent = 'Downloading...';
+
+  showProgress();
+  try {
+    await streamDownload('/api/download', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+  } finally {
+    btn.disabled = false; btn.textContent = 'Download';
+  }
+});
+
+// File drop zone
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+let selectedFile = null;
+
+dropZone.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => { if (fileInput.files[0]) selectFile(fileInput.files[0]); });
+dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', (e) => {
+  e.preventDefault(); dropZone.classList.remove('dragover');
+  if (e.dataTransfer.files[0]) selectFile(e.dataTransfer.files[0]);
+});
+
+function selectFile(file) {
+  selectedFile = file;
+  const nameEl = document.getElementById('file-name');
+  nameEl.textContent = file.name;
+  nameEl.classList.remove('hidden');
+}
+
+// Batch — handles both paste and file modes
+function getBatchOpts() {
+  return {
+    size: document.getElementById('batch-size').value,
+    type: document.getElementById('batch-type').value,
+    background: document.getElementById('batch-bg').value,
+    format: document.getElementById('batch-format').value,
+  };
+}
+
+async function startBatch() {
+  const btn = document.getElementById('btn-batch');
+  btn.disabled = true; btn.textContent = 'Downloading...';
+  showProgress();
+
+  try {
+    if (batchMode === 'paste') {
+      const text = document.getElementById('paste-text').value.trim();
+      if (!text) { alert('Paste a list first.'); return; }
+      const body = { text, ...getBatchOpts() };
+      await streamDownload('/api/paste', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+    } else {
+      if (!selectedFile) { alert('Select a file first.'); return; }
+      const fd = new FormData();
+      fd.append('file', selectedFile);
+      const opts = getBatchOpts();
+      Object.keys(opts).forEach(k => fd.append(k, opts[k]));
+      await streamDownload('/api/upload', { method: 'POST', body: fd });
+    }
+  } finally {
+    btn.disabled = false; btn.textContent = 'Download All';
+  }
+}
+
+// SSE progress streaming
+function showProgress() {
+  document.getElementById('progress-section').classList.remove('hidden');
+  document.getElementById('progress-bar').style.width = '0%';
+  document.getElementById('progress-count').textContent = '0/0';
+  document.getElementById('progress-query').textContent = '';
+  document.getElementById('progress-label').textContent = 'Downloading...';
+}
+
+async function streamDownload(url, fetchOpts) {
+  document.getElementById('results-section').classList.add('hidden');
+  const res = await fetch(url, fetchOpts);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let allFiles = [];
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      try {
+        const data = JSON.parse(line.slice(6));
+        if (data.done) {
+          allFiles = data.files || [];
+          document.getElementById('progress-label').textContent = 'Done';
+          document.getElementById('progress-bar').style.width = '100%';
+          showResults(allFiles, data.cumulative);
+        } else {
+          const pct = Math.round((data.current / data.total) * 100);
+          document.getElementById('progress-bar').style.width = pct + '%';
+          document.getElementById('progress-count').textContent = data.current + '/' + data.total;
+          document.getElementById('progress-query').textContent = data.query;
+          if (data.stats.files) allFiles.push(...data.stats.files);
+        }
+      } catch (e) {}
+    }
+  }
+}
+
+function showResults(files, stats) {
+  const section = document.getElementById('results-section');
+  const grid = document.getElementById('results-grid');
+  const statsEl = document.getElementById('results-stats');
+
+  section.classList.remove('hidden');
+  statsEl.textContent = 'Downloaded: ' + stats.downloaded + ' | Failed: ' + stats.failed + ' | Skipped: ' + stats.skipped;
+  grid.replaceChildren();
+
+  for (const file of files) {
+    const card = document.createElement('div');
+    card.className = 'fade-in bg-white rounded-lg border border-gray-200 overflow-hidden group';
+
+    const imgWrap = document.createElement('div');
+    const ext = file.split('.').pop().toLowerCase();
+    imgWrap.className = 'aspect-square flex items-center justify-center p-2 ' + (ext === 'png' ? 'checker-bg' : 'bg-gray-100');
+
+    const img = document.createElement('img');
+    img.src = '/api/downloads/' + encodeURIComponent(file);
+    img.alt = file;
+    img.className = 'max-w-full max-h-full object-contain';
+    imgWrap.appendChild(img);
+
+    const info = document.createElement('div');
+    info.className = 'p-2 border-t border-gray-100';
+    const label = document.createElement('p');
+    label.className = 'text-xs text-gray-600 truncate';
+    label.title = file;
+    label.textContent = file;
+    info.appendChild(label);
+
+    card.appendChild(imgWrap);
+    card.appendChild(info);
+    grid.appendChild(card);
+  }
+}
+</script>
+</body>
+</html>

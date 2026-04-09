@@ -1,0 +1,40 @@
+OpenAI
+Anthropic
+Google DeepMind
+Meta AI
+Mistral AI
+Cohere
+Stability AI
+Hugging Face
+xAI
+Perplexity
+Inflection AI
+AI21 Labs
+Aleph Alpha
+Databricks
+Jasper AI
+Copy.ai
+Notion AI
+Grammarly
+Midjourney
+Runway
+Descript
+Synthesia
+HeyGen
+Tome
+Beautiful.ai
+Gamma
+Otter.ai
+Fireflies.ai
+Harvey AI
+Casetext
+Glean
+Writer
+Typeface
+Adobe Firefly
+Canva AI
+Figma AI
+GitHub Copilot
+Cursor
+Replit
+Vercel v0
