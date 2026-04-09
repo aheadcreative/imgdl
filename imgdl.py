@@ -253,6 +253,56 @@ def load_config() -> dict:
 WINE_TYPES = {"bottle", "wine"}
 PRODUCT_TYPES = {"product", "product photo"}
 
+# Domain map for Google Favicon logo lookups
+DOMAIN_MAP = {
+    "openai": "openai.com", "anthropic": "anthropic.com",
+    "google deepmind": "deepmind.google", "meta ai": "meta.com",
+    "mistral ai": "mistral.ai", "cohere": "cohere.com",
+    "stability ai": "stability.ai", "hugging face": "huggingface.co",
+    "xai": "x.ai", "perplexity": "perplexity.ai",
+    "inflection ai": "inflection.ai", "ai21 labs": "ai21.com",
+    "aleph alpha": "aleph-alpha.com", "databricks": "databricks.com",
+    "jasper ai": "jasper.ai", "copy.ai": "copy.ai",
+    "notion ai": "notion.so", "grammarly": "grammarly.com",
+    "midjourney": "midjourney.com", "runway": "runwayml.com",
+    "descript": "descript.com", "synthesia": "synthesia.io",
+    "heygen": "heygen.com", "tome": "tome.app",
+    "beautiful.ai": "beautiful.ai", "gamma": "gamma.app",
+    "otter.ai": "otter.ai", "fireflies.ai": "fireflies.ai",
+    "harvey ai": "harvey.ai", "casetext": "casetext.com",
+    "glean": "glean.com", "writer": "writer.com",
+    "typeface": "typeface.ai", "adobe firefly": "adobe.com",
+    "canva ai": "canva.com", "figma ai": "figma.com",
+    "github copilot": "github.com", "cursor": "cursor.com",
+    "replit": "replit.com", "vercel v0": "vercel.com",
+    "google": "google.com", "microsoft": "microsoft.com",
+    "apple": "apple.com", "amazon": "amazon.com",
+    "tesla": "tesla.com", "nvidia": "nvidia.com",
+    "slack": "slack.com", "stripe": "stripe.com",
+    "shopify": "shopify.com", "spotify": "spotify.com",
+    "discord": "discord.com", "netflix": "netflix.com",
+}
+
+# Italian and international wine e-commerce sites with good product photography
+WINE_ECOMMERCE_SITES = [
+    "tannico.it", "callmewine.com", "xtrawine.com", "vinicum.it",
+    "bernabei.it", "vino75.com", "giordanovini.it", "wine.com",
+    "vivino.com", "wine-searcher.com", "winehouse.it", "enotecaitaliana.it",
+    "svinando.com", "wineowine.it",
+]
+
+# Source quality tiers — higher = more trusted product photography
+SOURCE_QUALITY = {
+    "vivino": 70,
+    "tannico.it": 90, "callmewine.com": 85, "xtrawine.com": 85,
+    "vinicum.it": 80, "bernabei.it": 80, "vino75.com": 80,
+    "giordanovini.it": 75, "wine.com": 85, "wine-searcher.com": 75,
+    "winehouse.it": 75, "enotecaitaliana.it": 75, "svinando.com": 75,
+    "wineowine.it": 70,
+    "google_cse": 60, "duckduckgo": 40, "brave": 40,
+    "direct_url": 80, "favicon": 50,
+}
+
 
 def build_search_query(query: str, img_type: str | None, background: str | None) -> str:
     parts = [query]
@@ -268,45 +318,113 @@ def build_search_query(query: str, img_type: str | None, background: str | None)
 
 
 # ---------------------------------------------------------------------------
-# Image sources
+# Candidate-based image sourcing
 # ---------------------------------------------------------------------------
 
-def fetch_url(url: str) -> bytes | None:
-    """Directly download an image from a URL (skip search)."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    }
-    try:
-        r = requests.get(url, timeout=15, headers=headers)
-        if r.status_code == 200 and len(r.content) > 100:
-            return r.content
-    except requests.RequestException:
-        pass
-    return None
+@dataclass
+class Candidate:
+    """An image candidate found during search — scored and ranked before download."""
+    url: str
+    source: str  # e.g. "vivino", "tannico.it", "duckduckgo"
+    width: int = 0
+    height: int = 0
+    score: float = 0.0
 
 
-def fetch_google_favicon(domain: str) -> bytes | None:
-    """Fetch high-res favicon via Google's S2 service (Clearbit replacement)."""
-    url = f"https://www.google.com/s2/favicons?domain={domain}&sz=128"
-    try:
-        r = requests.get(url, timeout=10)
-        if r.status_code == 200 and len(r.content) > 100:
-            return r.content
-    except requests.RequestException:
-        pass
-    return None
-
-
-_VIVINO_IMG_HASH_RE = re.compile(r"images\.vivino\.com/thumbs/([a-zA-Z0-9_-]+)_p[bl]_[\dx]+\.png")
 _BROWSER_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
+_VIVINO_IMG_HASH_RE = re.compile(r"images\.vivino\.com/thumbs/([a-zA-Z0-9_-]+)_p[bl]_[\dx]+\.png")
 
 
-def fetch_vivino(query: str, count: int) -> list[bytes]:
-    """Search Vivino and download high-res bottle images (960px tall)."""
+def _ddgs_image_search(query: str, max_results: int = 8) -> list[dict]:
+    """Run a DuckDuckGo image search returning raw result dicts."""
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        try:
+            from duckduckgo_search import DDGS
+        except ImportError:
+            return []
+    try:
+        with DDGS() as ddgs:
+            return list(ddgs.images(query, max_results=max_results))
+    except Exception:
+        return []
+
+
+def _source_from_url(url: str) -> str:
+    """Extract a source key from a URL for quality scoring."""
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(url).hostname or ""
+        host = host.removeprefix("www.").removeprefix("images.")
+        for site in WINE_ECOMMERCE_SITES:
+            if site in host:
+                return site
+    except Exception:
+        pass
+    return "duckduckgo"
+
+
+def _probe_image_size(url: str) -> tuple[int, int]:
+    """Download the first few KB of an image to read its dimensions without fetching the whole file."""
+    try:
+        r = requests.get(url, timeout=8, headers={"User-Agent": _BROWSER_UA, "Range": "bytes=0-65535"}, stream=True)
+        if r.status_code in (200, 206):
+            chunk = r.content if r.status_code == 206 else next(r.iter_content(65536), b"")
+            r.close()
+            if len(chunk) > 100:
+                img = Image.open(io.BytesIO(chunk))
+                return img.size
+    except Exception:
+        pass
+    return (0, 0)
+
+
+def score_candidate(c: Candidate, target_w: int, target_h: int, img_type: str | None) -> float:
+    """Score a candidate. Higher is better."""
+    s = 0.0
+
+    # Source quality (0-90 points)
+    s += SOURCE_QUALITY.get(c.source, 30)
+
+    # Resolution bonus (0-100 points) — scaled by how close to or above target
+    if c.width > 0 and c.height > 0:
+        max_dim = max(c.width, c.height)
+        target_max = max(target_w, target_h)
+        if max_dim >= target_max:
+            s += 100  # full marks — no upscaling needed
+        elif max_dim >= target_max * 0.7:
+            s += 70
+        elif max_dim >= target_max * 0.5:
+            s += 40
+        else:
+            s += 10  # very small — penalise heavily
+    else:
+        s += 30  # unknown size — neutral
+
+    # Aspect ratio bonus for bottles (0-30 points) — tall/portrait preferred
+    if img_type in WINE_TYPES and c.width > 0 and c.height > 0:
+        ratio = c.height / c.width
+        if 2.0 <= ratio <= 4.0:
+            s += 30  # ideal bottle proportion
+        elif 1.3 <= ratio < 2.0:
+            s += 20  # decent portrait
+        elif ratio >= 1.0:
+            s += 10  # square-ish
+        # landscape images get 0 bonus
+
+    return s
+
+
+# ---------------------------------------------------------------------------
+# Source functions — return Candidate lists (no downloading of image bytes)
+# ---------------------------------------------------------------------------
+
+def search_vivino(query: str, limit: int = 5) -> list[Candidate]:
+    """Search Vivino and return candidate URLs for bottle images."""
     try:
         r = requests.get(
             "https://www.vivino.com/search/wines",
@@ -319,43 +437,54 @@ def fetch_vivino(query: str, count: int) -> list[bytes]:
     except requests.RequestException:
         return []
 
-    # Extract unique image hashes from search page
     from collections import OrderedDict
     hashes = list(OrderedDict.fromkeys(_VIVINO_IMG_HASH_RE.findall(r.text)))
-    if not hashes:
-        return []
-
-    results = []
-    for h in hashes[: count + 2]:
-        if len(results) >= count:
-            break
+    candidates = []
+    for h in hashes[:limit]:
         url = f"https://images.vivino.com/thumbs/{h}_pb_x960.png"
-        try:
-            img_r = requests.get(url, headers={"User-Agent": _BROWSER_UA}, timeout=10)
-            if img_r.status_code == 200 and len(img_r.content) > 500:
-                results.append(img_r.content)
-        except requests.RequestException:
+        candidates.append(Candidate(url=url, source="vivino", width=254, height=960))
+    return candidates
+
+
+def search_wine_ecommerce(query: str, limit: int = 8) -> list[Candidate]:
+    """Search DuckDuckGo for wine bottle images across Italian and international e-commerce sites."""
+    site_clause = " OR ".join(f"site:{s}" for s in WINE_ECOMMERCE_SITES[:8])
+    search_q = f"{query} wine bottle ({site_clause})"
+    results = _ddgs_image_search(search_q, max_results=limit)
+
+    candidates = []
+    for r in results:
+        url = r.get("image", "")
+        if not url:
             continue
-    return results
+        w = int(r.get("width", 0) or 0)
+        h = int(r.get("height", 0) or 0)
+        candidates.append(Candidate(url=url, source=_source_from_url(url), width=w, height=h))
+    return candidates
 
 
-def fetch_wine_searcher(query: str, count: int) -> list[bytes]:
-    """Search DuckDuckGo for wine images scoped to wine-searcher.com."""
-    return fetch_duckduckgo(f"{query} wine bottle site:wine-searcher.com", count)
+def search_duckduckgo(query: str, limit: int = 8) -> list[Candidate]:
+    """General DuckDuckGo image search returning candidates."""
+    results = _ddgs_image_search(query, max_results=limit)
+    candidates = []
+    for r in results:
+        url = r.get("image", "")
+        if not url:
+            continue
+        w = int(r.get("width", 0) or 0)
+        h = int(r.get("height", 0) or 0)
+        candidates.append(Candidate(url=url, source=_source_from_url(url), width=w, height=h))
+    return candidates
 
 
-def fetch_google_cse(query: str, count: int, api_key: str, cse_id: str,
-                     img_type: str | None) -> list[bytes]:
+def search_google_cse(query: str, api_key: str, cse_id: str,
+                      img_type: str | None, limit: int = 8) -> list[Candidate]:
+    """Google Custom Search returning candidates."""
     params = {
-        "q": query,
-        "cx": cse_id,
-        "key": api_key,
-        "searchType": "image",
-        "num": min(count, 10),
+        "q": query, "cx": cse_id, "key": api_key,
+        "searchType": "image", "num": min(limit, 10),
     }
     if img_type == "logo":
-        params["imgType"] = "clipart"
-    elif img_type in ("icon",):
         params["imgType"] = "clipart"
     elif img_type == "headshot":
         params["imgType"] = "face"
@@ -368,54 +497,23 @@ def fetch_google_cse(query: str, count: int, api_key: str, cse_id: str,
     except (requests.RequestException, ValueError):
         return []
 
-    results = []
-    for item in items[:count]:
-        link = item.get("link", "")
-        try:
-            img_r = requests.get(link, timeout=10, headers={"User-Agent": "imgdl/1.0"})
-            if img_r.status_code == 200 and len(img_r.content) > 100:
-                results.append(img_r.content)
-        except requests.RequestException:
-            continue
-    return results
+    candidates = []
+    for item in items[:limit]:
+        url = item.get("link", "")
+        img_info = item.get("image", {})
+        w = int(img_info.get("width", 0) or 0)
+        h = int(img_info.get("height", 0) or 0)
+        if url:
+            candidates.append(Candidate(url=url, source="google_cse", width=w, height=h))
+    return candidates
 
 
-def fetch_duckduckgo(query: str, count: int) -> list[bytes]:
-    try:
-        from ddgs import DDGS
-    except ImportError:
-        try:
-            from duckduckgo_search import DDGS
-        except ImportError:
-            return []
-
-    results = []
-    try:
-        with DDGS() as ddgs:
-            images = list(ddgs.images(query, max_results=count + 3))
-    except Exception:
-        return []
-
-    for img in images[:count + 3]:
-        if len(results) >= count:
-            break
-        url = img.get("image", "")
-        if not url:
-            continue
-        try:
-            r = requests.get(url, timeout=10, headers={"User-Agent": "imgdl/1.0"})
-            if r.status_code == 200 and len(r.content) > 200:
-                results.append(r.content)
-        except requests.RequestException:
-            continue
-    return results
-
-
-def fetch_brave(query: str, count: int, api_key: str) -> list[bytes]:
+def search_brave(query: str, api_key: str, limit: int = 8) -> list[Candidate]:
+    """Brave image search returning candidates."""
     try:
         r = requests.get(
             "https://api.search.brave.com/res/v1/images/search",
-            params={"q": query, "count": min(count + 2, 10)},
+            params={"q": query, "count": min(limit, 10)},
             headers={"Accept": "application/json", "Accept-Encoding": "gzip", "X-Subscription-Token": api_key},
             timeout=15,
         )
@@ -425,19 +523,56 @@ def fetch_brave(query: str, count: int, api_key: str) -> list[bytes]:
     except (requests.RequestException, ValueError):
         return []
 
+    candidates = []
+    for item in items[:limit]:
+        url = item.get("properties", {}).get("url") or item.get("thumbnail", {}).get("src", "")
+        w = int(item.get("properties", {}).get("width", 0) or 0)
+        h = int(item.get("properties", {}).get("height", 0) or 0)
+        if url:
+            candidates.append(Candidate(url=url, source="brave", width=w, height=h))
+    return candidates
+
+
+# ---------------------------------------------------------------------------
+# Legacy source functions (non-wine/non-product types use the old direct flow)
+# ---------------------------------------------------------------------------
+
+def fetch_url(url: str) -> bytes | None:
+    """Directly download an image from a URL (skip search)."""
+    try:
+        r = requests.get(url, timeout=15, headers={"User-Agent": _BROWSER_UA})
+        if r.status_code == 200 and len(r.content) > 100:
+            return r.content
+    except requests.RequestException:
+        pass
+    return None
+
+
+def fetch_google_favicon(domain: str) -> bytes | None:
+    """Fetch high-res favicon via Google's S2 service."""
+    url = f"https://www.google.com/s2/favicons?domain={domain}&sz=128"
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200 and len(r.content) > 100:
+            return r.content
+    except requests.RequestException:
+        pass
+    return None
+
+
+def fetch_duckduckgo_legacy(query: str, count: int) -> list[bytes]:
+    """Direct DuckDuckGo fetch — used for non-wine types that don't need ranking."""
+    results_raw = _ddgs_image_search(query, max_results=count + 3)
     results = []
-    for item in items:
+    for img in results_raw:
         if len(results) >= count:
             break
-        url = item.get("properties", {}).get("url") or item.get("thumbnail", {}).get("src", "")
+        url = img.get("image", "")
         if not url:
             continue
-        try:
-            img_r = requests.get(url, timeout=10, headers={"User-Agent": "imgdl/1.0"})
-            if img_r.status_code == 200 and len(img_r.content) > 200:
-                results.append(img_r.content)
-        except requests.RequestException:
-            continue
+        data = fetch_url(url)
+        if data and len(data) > 200:
+            results.append(data)
     return results
 
 
@@ -532,6 +667,75 @@ class DownloadOpts:
     min_source_pct: int = 0  # 0 = accept any size, 50 = source must be ≥50% of target
 
 
+def _collect_candidates(
+    query: str, search_q: str, img_type: str | None,
+    google_key: str | None, google_id: str | None, brave_key: str | None,
+) -> list[Candidate]:
+    """Phase 1: Search all sources and collect candidates. No image bytes downloaded yet."""
+    candidates: list[Candidate] = []
+    is_wine = img_type in WINE_TYPES
+
+    if is_wine:
+        # Wine-specific: cast a wide net across Vivino + e-commerce + general
+        candidates.extend(search_vivino(query, limit=5))
+        time.sleep(0.3)
+        candidates.extend(search_wine_ecommerce(query, limit=8))
+        time.sleep(0.5)
+        candidates.extend(search_duckduckgo(search_q, limit=6))
+        time.sleep(0.5)
+    else:
+        # General search
+        candidates.extend(search_duckduckgo(search_q, limit=8))
+        time.sleep(0.5)
+
+    if google_key and google_id:
+        candidates.extend(search_google_cse(search_q, google_key, google_id, img_type, limit=6))
+        time.sleep(0.5)
+
+    if brave_key:
+        candidates.extend(search_brave(search_q, brave_key, limit=6))
+        time.sleep(0.5)
+
+    return candidates
+
+
+def _rank_and_probe(
+    candidates: list[Candidate], target_w: int, target_h: int,
+    img_type: str | None, min_source_pct: int,
+) -> list[Candidate]:
+    """Phase 2: Probe unknown sizes, score, filter, and rank candidates."""
+    min_dim = max(target_w, target_h) * min_source_pct / 100 if min_source_pct > 0 else 0
+
+    # Probe dimensions for candidates missing size info (up to 10 probes to stay fast)
+    probed = 0
+    for c in candidates:
+        if c.width == 0 and c.height == 0 and probed < 10:
+            c.width, c.height = _probe_image_size(c.url)
+            probed += 1
+
+    # Filter out images that are too small
+    if min_dim > 0:
+        candidates = [c for c in candidates if
+                      c.width == 0 or c.height == 0 or  # unknown size — give benefit of doubt
+                      max(c.width, c.height) >= min_dim]
+
+    # Deduplicate by URL
+    seen_urls: set[str] = set()
+    unique = []
+    for c in candidates:
+        if c.url not in seen_urls:
+            seen_urls.add(c.url)
+            unique.append(c)
+    candidates = unique
+
+    # Score and sort
+    for c in candidates:
+        c.score = score_candidate(c, target_w, target_h, img_type)
+    candidates.sort(key=lambda c: c.score, reverse=True)
+
+    return candidates
+
+
 def download_images_for_query(
     item: QueryItem,
     opts: DownloadOpts,
@@ -578,48 +782,36 @@ def download_images_for_query(
             failed_log.write(f"{query}\tFailed to download URL: {item.url}\n")
             stats["failed"] = 1
             return stats
-    else:
-        is_wine = img_type in WINE_TYPES
 
-        # Source 1a: Vivino (wine/bottle types)
-        if is_wine and len(raw_images) < opts.count:
-            needed = opts.count - len(raw_images)
-            raw_images.extend(fetch_vivino(query, needed))
-            time.sleep(0.5)
-
-        # Source 1b: Google Favicon (logo type only, known domains)
-        if img_type == "logo" and not raw_images:
-            key = query.lower().strip()
-            domain = DOMAIN_MAP.get(key)
-            if domain:
-                data = fetch_google_favicon(domain)
-                if data:
-                    raw_images.append(data)
-                time.sleep(0.3)
-
-        # Source 2: Google CSE
-        if len(raw_images) < opts.count and google_key and google_id:
-            needed = opts.count - len(raw_images)
-            raw_images.extend(fetch_google_cse(search_q, needed, google_key, google_id, img_type))
-            time.sleep(1)
-
-        # Source 3: DuckDuckGo
+    # Logo mode — use legacy direct flow (favicon + DDG)
+    elif img_type == "logo":
+        key = query.lower().strip()
+        domain = DOMAIN_MAP.get(key)
+        if domain:
+            data = fetch_google_favicon(domain)
+            if data:
+                raw_images.append(data)
         if len(raw_images) < opts.count:
-            needed = opts.count - len(raw_images)
-            raw_images.extend(fetch_duckduckgo(search_q, needed))
-            time.sleep(1)
+            raw_images.extend(fetch_duckduckgo_legacy(search_q, opts.count - len(raw_images)))
 
-        # Source 3b: Wine-Searcher via DDG (wine fallback)
-        if is_wine and len(raw_images) < opts.count:
-            needed = opts.count - len(raw_images)
-            raw_images.extend(fetch_wine_searcher(query, needed))
-            time.sleep(1)
+    # Wine / product / general — use candidate ranking flow
+    else:
+        candidates = _collect_candidates(
+            query, search_q, img_type, google_key, google_id, brave_key,
+        )
 
-        # Source 4: Brave
-        if len(raw_images) < opts.count and brave_key:
-            needed = opts.count - len(raw_images)
-            raw_images.extend(fetch_brave(search_q, needed, brave_key))
-            time.sleep(1)
+        if candidates:
+            ranked = _rank_and_probe(
+                candidates, target_w, target_h, img_type, opts.min_source_pct,
+            )
+
+            # Download top candidates until we have enough
+            for c in ranked:
+                if len(raw_images) >= opts.count:
+                    break
+                data = fetch_url(c.url)
+                if data and len(data) > 200:
+                    raw_images.append(data)
 
     if not raw_images:
         failed_log.write(f"{query}\tNo images found from any source\n")
@@ -764,7 +956,7 @@ def main():
     if has_urls:
         sources_available.append("Direct URL")
     if opts.type in WINE_TYPES:
-        sources_available.append("Vivino")
+        sources_available.extend(["Vivino", "Wine E-commerce (.it)"])
     if opts.type == "logo":
         sources_available.append("Google Favicon")
     if google_key and google_id:
@@ -772,7 +964,8 @@ def main():
     sources_available.append("DuckDuckGo")
     if brave_key:
         sources_available.append("Brave")
-    print(f"Sources: {' → '.join(sources_available)}")
+    mode = "search → rank → download best" if opts.type in WINE_TYPES | PRODUCT_TYPES else "waterfall"
+    print(f"Sources: {' + '.join(sources_available)} ({mode})")
     print()
 
     total = {"downloaded": 0, "failed": 0, "skipped": 0}
