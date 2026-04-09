@@ -16,82 +16,6 @@ import yaml
 from PIL import Image
 from tqdm import tqdm
 
-# ---------------------------------------------------------------------------
-# Domain map for Clearbit logo lookups
-# ---------------------------------------------------------------------------
-
-DOMAIN_MAP = {
-    "openai": "openai.com",
-    "anthropic": "anthropic.com",
-    "google deepmind": "deepmind.google",
-    "meta ai": "meta.com",
-    "mistral ai": "mistral.ai",
-    "cohere": "cohere.com",
-    "stability ai": "stability.ai",
-    "hugging face": "huggingface.co",
-    "xai": "x.ai",
-    "perplexity": "perplexity.ai",
-    "inflection ai": "inflection.ai",
-    "ai21 labs": "ai21.com",
-    "aleph alpha": "aleph-alpha.com",
-    "databricks": "databricks.com",
-    "jasper ai": "jasper.ai",
-    "copy.ai": "copy.ai",
-    "notion ai": "notion.so",
-    "grammarly": "grammarly.com",
-    "midjourney": "midjourney.com",
-    "runway": "runwayml.com",
-    "descript": "descript.com",
-    "synthesia": "synthesia.io",
-    "heygen": "heygen.com",
-    "tome": "tome.app",
-    "beautiful.ai": "beautiful.ai",
-    "gamma": "gamma.app",
-    "otter.ai": "otter.ai",
-    "fireflies.ai": "fireflies.ai",
-    "harvey ai": "harvey.ai",
-    "casetext": "casetext.com",
-    "glean": "glean.com",
-    "writer": "writer.com",
-    "typeface": "typeface.ai",
-    "adobe firefly": "adobe.com",
-    "canva ai": "canva.com",
-    "figma ai": "figma.com",
-    "github copilot": "github.com",
-    "cursor": "cursor.com",
-    "replit": "replit.com",
-    "vercel v0": "vercel.com",
-    "google": "google.com",
-    "microsoft": "microsoft.com",
-    "apple": "apple.com",
-    "amazon": "amazon.com",
-    "tesla": "tesla.com",
-    "nvidia": "nvidia.com",
-    "slack": "slack.com",
-    "stripe": "stripe.com",
-    "shopify": "shopify.com",
-    "spotify": "spotify.com",
-    "discord": "discord.com",
-    "twitch": "twitch.tv",
-    "reddit": "reddit.com",
-    "twitter": "x.com",
-    "x": "x.com",
-    "linkedin": "linkedin.com",
-    "pinterest": "pinterest.com",
-    "airbnb": "airbnb.com",
-    "uber": "uber.com",
-    "lyft": "lyft.com",
-    "dropbox": "dropbox.com",
-    "zoom": "zoom.us",
-    "salesforce": "salesforce.com",
-    "oracle": "oracle.com",
-    "ibm": "ibm.com",
-    "intel": "intel.com",
-    "amd": "amd.com",
-    "samsung": "samsung.com",
-    "sony": "sony.com",
-    "netflix": "netflix.com",
-}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -806,7 +730,7 @@ def main():
     img_type = args.type
     min_src = args.min_source_pct
     if min_src is None:
-        min_src = 50 if img_type in WINE_TYPES | PRODUCT_TYPES else 0
+        min_src = 70 if img_type in WINE_TYPES | PRODUCT_TYPES else 0
 
     opts = DownloadOpts(
         size=parse_size(args.size),
