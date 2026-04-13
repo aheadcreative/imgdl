@@ -312,7 +312,9 @@ def build_search_query(query: str, img_type: str | None, background: str | None)
         parts.append("product photo high resolution")
     elif img_type:
         parts.append(img_type)
-    if background and background != "none":
+    # Only append background to search for generic types — for wine/product,
+    # background is a processing concern, not a search concern.
+    if background and background != "none" and img_type not in WINE_TYPES | PRODUCT_TYPES:
         parts.append(f"{background} background")
     return " ".join(parts)
 
