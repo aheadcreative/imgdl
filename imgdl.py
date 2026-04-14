@@ -582,6 +582,35 @@ def fetch_duckduckgo_legacy(query: str, count: int) -> list[bytes]:
 # Image processing
 # ---------------------------------------------------------------------------
 
+def _auto_remove_white_bg(img: Image.Image, threshold: int = 240) -> Image.Image:
+    """Remove white/near-white background by setting bright pixels to alpha=0.
+    Only triggers if image corners are near-white (indicates studio/product shot)."""
+    img = img.convert("RGBA")
+    w, h = img.size
+    if w < 4 or h < 4:
+        return img
+
+    # Sample corner pixels to decide if background is white
+    corners = [img.getpixel((0, 0)), img.getpixel((w - 1, 0)),
+               img.getpixel((0, h - 1)), img.getpixel((w - 1, h - 1))]
+    corner_min = min(min(c[0], c[1], c[2]) for c in corners)
+    if corner_min < threshold - 10:
+        # Corners aren't white enough — don't risk chewing into the subject
+        return img
+
+    # Build a luminance mask from the max of R/G/B channels, then derive new alpha
+    from PIL import ImageChops
+    r, g, b, a = img.split()
+    max_rgb = ImageChops.lighter(ImageChops.lighter(r, g), b)
+    # Soft threshold: full transparency above `threshold`, full opacity below `threshold - 30`
+    lo, hi = threshold - 30, threshold
+    new_alpha = max_rgb.point(lambda p: 0 if p >= hi else (255 if p <= lo else int(255 * (hi - p) / (hi - lo))))
+    # Combine with existing alpha (in case source already had partial transparency)
+    combined = ImageChops.multiply(a, new_alpha)
+    img.putalpha(combined)
+    return img
+
+
 def process_image(
     raw: bytes,
     target_w: int,
@@ -607,6 +636,11 @@ def process_image(
     if img.mode not in ("RGBA", "LA", "PA"):
         img = img.convert("RGBA")
 
+    # Auto-remove white background when transparent output is requested
+    want_transparent = fmt in ("png", "webp") and bg in ("transparent", "none")
+    if want_transparent:
+        img = _auto_remove_white_bg(img)
+
     if transparent_only:
         if img.mode != "RGBA" or img.getextrema()[3][0] == 255:
             return None
@@ -623,8 +657,7 @@ def process_image(
     img.thumbnail((inner_w, inner_h), Image.LANCZOS)
 
     # Determine background
-    use_alpha = fmt == "png" and bg in ("transparent", "none")
-    if use_alpha:
+    if want_transparent:
         canvas = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 0))
     else:
         bg_color = (255, 255, 255) if bg in ("white", "transparent", "none") else (30, 30, 30)
