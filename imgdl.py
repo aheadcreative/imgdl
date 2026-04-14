@@ -330,6 +330,7 @@ class Candidate:
     width: int = 0
     height: int = 0
     score: float = 0.0
+    title: str = ""  # page title / alt text from search result (used for relevance)
 
 
 _BROWSER_UA = (
@@ -355,17 +356,94 @@ def _ddgs_image_search(query: str, max_results: int = 8) -> list[dict]:
 
 
 def _source_from_url(url: str) -> str:
-    """Extract a source key from a URL for quality scoring."""
+    """Extract a source key from a URL for quality scoring. Matches domain suffix only."""
     try:
         from urllib.parse import urlparse
         host = urlparse(url).hostname or ""
-        host = host.removeprefix("www.").removeprefix("images.")
+        # Strip common CDN prefixes so "images.tannico.it" → "tannico.it"
+        for prefix in ("www.", "images.", "img.", "cdn.", "static.", "assets.", "s."):
+            host = host.removeprefix(prefix)
         for site in WINE_ECOMMERCE_SITES:
-            if site in host:
+            if host == site or host.endswith("." + site):
                 return site
     except Exception:
         pass
     return "duckduckgo"
+
+
+# Words too common or generic to be useful as relevance signals
+_STOPWORDS = {
+    "wine", "wines", "vino", "bottle", "bottles", "bottiglia", "bottiglie",
+    "red", "white", "rose", "rosé", "rosso", "bianco", "rosato",
+    "the", "a", "an", "di", "de", "del", "della", "dei", "delle", "da",
+    "il", "la", "le", "les", "los", "las", "and", "e", "et",
+    "doc", "docg", "igt", "igp", "aoc", "aop", "dop",
+    "riserva", "reserva", "grand", "gran", "cru", "classico", "classic",
+    "vintage", "annata", "vol", "cl", "ml", "l", "lt", "litre", "liter",
+    "750ml", "1l", "15l", "magnum",
+    # Grape varieties — too common to narrow down a specific wine
+    "shiraz", "cabernet", "sauvignon", "merlot", "pinot", "chardonnay",
+    "syrah", "grenache", "tempranillo", "sangiovese", "nebbiolo", "grillo",
+    "nerello", "mascalese", "aglianico", "montepulciano", "barbera", "dolcetto",
+    "vermentino", "fiano", "falanghina", "viognier", "malbec", "zinfandel",
+    "blend", "blanc", "noir", "nero", "bianco", "rosso",
+    # Region/designation words — broad geographic terms
+    "terre", "terra", "tenuta", "tenute", "azienda", "agricola", "cantina",
+    "sicilia", "siciliane", "siciliano", "sicily", "sicilian",
+    "toscana", "toscano", "tuscany", "tuscan", "chianti",
+    "piemonte", "piemontese", "piedmont", "piedmontese",
+    "veneto", "lombardia", "lombardy", "umbria", "marche", "abruzzo",
+    "campania", "puglia", "apulia", "calabria", "sardegna", "sardinia",
+    "italia", "italiano", "italian", "italy",
+    "france", "french", "spain", "spanish", "portugal", "portuguese",
+    "bordeaux", "burgundy", "champagne", "rhone", "loire", "alsace",
+    "front", "label", "high", "resolution", "jpg", "png", "jpeg", "webp",
+    "product", "image", "photo",
+}
+
+
+def _extract_relevance_tokens(query: str) -> list[str]:
+    """Extract distinctive tokens from a query for relevance matching.
+    Skips stopwords, years, numbers, and short words."""
+    # Lowercase, strip accents, split on non-alphanumeric
+    import unicodedata
+    normalized = unicodedata.normalize("NFKD", query.lower())
+    normalized = "".join(c for c in normalized if not unicodedata.combining(c))
+    tokens = re.findall(r"[a-z0-9]+", normalized)
+    distinctive = []
+    for t in tokens:
+        if len(t) < 4:
+            continue
+        if t in _STOPWORDS:
+            continue
+        if t.isdigit():  # skip years and pure numbers
+            continue
+        distinctive.append(t)
+    return distinctive
+
+
+def _candidate_matches_query(candidate: "Candidate", tokens: list[str]) -> bool:
+    """Check if at least one distinctive query token appears in the candidate's URL or title."""
+    if not tokens:
+        return True  # no tokens = can't judge; accept
+    import unicodedata
+    from urllib.parse import urlparse, unquote
+
+    # Combine URL path + query + title into one compacted search haystack
+    try:
+        parsed = urlparse(candidate.url)
+        path = unquote(parsed.path + "?" + (parsed.query or ""))
+    except Exception:
+        path = candidate.url
+    haystack = (path + " " + (candidate.title or "")).lower()
+    haystack = unicodedata.normalize("NFKD", haystack)
+    haystack = "".join(c for c in haystack if not unicodedata.combining(c))
+    haystack_compact = re.sub(r"[^a-z0-9]+", "", haystack)
+
+    for t in tokens:
+        if t in haystack_compact:
+            return True
+    return False
 
 
 def _probe_image_size(url: str) -> tuple[int, int]:
@@ -436,7 +514,8 @@ def search_wine_ecommerce(query: str, limit: int = 8) -> list[Candidate]:
             continue
         w = int(r.get("width", 0) or 0)
         h = int(r.get("height", 0) or 0)
-        candidates.append(Candidate(url=url, source=_source_from_url(url), width=w, height=h))
+        title = str(r.get("title", "") or "")
+        candidates.append(Candidate(url=url, source=_source_from_url(url), width=w, height=h, title=title))
     return candidates
 
 
@@ -450,7 +529,8 @@ def search_duckduckgo(query: str, limit: int = 8) -> list[Candidate]:
             continue
         w = int(r.get("width", 0) or 0)
         h = int(r.get("height", 0) or 0)
-        candidates.append(Candidate(url=url, source=_source_from_url(url), width=w, height=h))
+        title = str(r.get("title", "") or "")
+        candidates.append(Candidate(url=url, source=_source_from_url(url), width=w, height=h, title=title))
     return candidates
 
 
@@ -613,7 +693,7 @@ def process_image(
             if src_h < target_h * pct:
                 return None
             # Reject non-bottle aspect ratios (labels, lifestyle shots, landscape crops)
-            if src_h / max(src_w, 1) < 1.5:
+            if src_h / max(src_w, 1) < 1.3:
                 return None
         else:
             # Generic: either dimension must meet threshold
@@ -721,7 +801,7 @@ def _collect_candidates(
 
 def _rank_and_probe(
     candidates: list[Candidate], target_w: int, target_h: int,
-    img_type: str | None, min_source_pct: int,
+    img_type: str | None, min_source_pct: int, query: str = "",
 ) -> list[Candidate]:
     """Phase 2: Probe unknown sizes, apply hard filters, score, and rank."""
     is_wine = img_type in WINE_TYPES
@@ -736,6 +816,13 @@ def _rank_and_probe(
             seen_urls.add(c.url)
             unique.append(c)
     candidates = unique
+
+    # Relevance filter: for wine, reject candidates whose URL contains no query term.
+    # This catches false-positive matches from wine.com/etc. that return unrelated wines.
+    if is_wine and query:
+        tokens = _extract_relevance_tokens(query)
+        if tokens:
+            candidates = [c for c in candidates if _candidate_matches_query(c, tokens)]
 
     # Probe dimensions for ALL candidates with unknown size (wine needs accurate data)
     probe_cap = 30 if is_wine else 10
@@ -755,9 +842,9 @@ def _rank_and_probe(
             # Must be tall enough (≥ min_height, typically ≥840px at 1200 target)
             if min_height > 0 and c.height < min_height:
                 continue
-            # Must have a bottle-like aspect ratio (h/w ≥ 1.5 excludes labels, lifestyle shots)
+            # Must have a bottle-like aspect ratio (h/w ≥ 1.3 excludes labels, lifestyle shots)
             ratio = c.height / max(c.width, 1)
-            if ratio < 1.5:
+            if ratio < 1.3:
                 continue
             filtered.append(c)
         candidates = filtered
@@ -846,13 +933,13 @@ def download_images_for_query(
         return stats
 
     ranked = _rank_and_probe(
-        candidates, target_w, target_h, img_type, opts.min_source_pct,
+        candidates, target_w, target_h, img_type, opts.min_source_pct, query,
     )
 
     if not ranked:
-        failed_log.write(f"{query}\tNo candidates passed quality filters "
+        failed_log.write(f"{query}\tNo candidates passed quality + relevance filters "
                          f"(need height ≥ {int(target_h * opts.min_source_pct / 100)}px, "
-                         f"aspect ratio ≥ 1.5)\n")
+                         f"aspect ratio ≥ 1.3, query match)\n")
         stats["failed"] = opts.count
         return stats
 
