@@ -287,14 +287,13 @@ DOMAIN_MAP = {
 WINE_ECOMMERCE_SITES = [
     "tannico.it", "callmewine.com", "xtrawine.com", "vinicum.it",
     "bernabei.it", "vino75.com", "giordanovini.it", "wine.com",
-    "vivino.com", "wine-searcher.com", "winehouse.it", "enotecaitaliana.it",
+    "wine-searcher.com", "winehouse.it", "enotecaitaliana.it",
     "svinando.com", "wineowine.it",
 ]
 
 # Source quality tiers — higher = more trusted product photography
 SOURCE_QUALITY = {
-    "vivino": 70,
-    "tannico.it": 90, "callmewine.com": 85, "xtrawine.com": 85,
+    "tannico.it": 95, "callmewine.com": 85, "xtrawine.com": 85,
     "vinicum.it": 80, "bernabei.it": 80, "vino75.com": 80,
     "giordanovini.it": 75, "wine.com": 85, "wine-searcher.com": 75,
     "winehouse.it": 75, "enotecaitaliana.it": 75, "svinando.com": 75,
@@ -327,7 +326,7 @@ def build_search_query(query: str, img_type: str | None, background: str | None)
 class Candidate:
     """An image candidate found during search — scored and ranked before download."""
     url: str
-    source: str  # e.g. "vivino", "tannico.it", "duckduckgo"
+    source: str  # e.g. "tannico.it", "wine.com", "duckduckgo"
     width: int = 0
     height: int = 0
     score: float = 0.0
@@ -337,7 +336,6 @@ _BROWSER_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
-_VIVINO_IMG_HASH_RE = re.compile(r"images\.vivino\.com/thumbs/([a-zA-Z0-9_-]+)_p[bl]_[\dx]+\.png")
 
 
 def _ddgs_image_search(query: str, max_results: int = 8) -> list[dict]:
@@ -424,29 +422,6 @@ def score_candidate(c: Candidate, target_w: int, target_h: int, img_type: str | 
 # ---------------------------------------------------------------------------
 # Source functions — return Candidate lists (no downloading of image bytes)
 # ---------------------------------------------------------------------------
-
-def search_vivino(query: str, limit: int = 5) -> list[Candidate]:
-    """Search Vivino and return candidate URLs for bottle images."""
-    try:
-        r = requests.get(
-            "https://www.vivino.com/search/wines",
-            params={"q": query},
-            headers={"User-Agent": _BROWSER_UA},
-            timeout=15,
-        )
-        if r.status_code != 200:
-            return []
-    except requests.RequestException:
-        return []
-
-    from collections import OrderedDict
-    hashes = list(OrderedDict.fromkeys(_VIVINO_IMG_HASH_RE.findall(r.text)))
-    candidates = []
-    for h in hashes[:limit]:
-        url = f"https://images.vivino.com/thumbs/{h}_pb_x960.png"
-        candidates.append(Candidate(url=url, source="vivino", width=254, height=960))
-    return candidates
-
 
 def search_wine_ecommerce(query: str, limit: int = 8) -> list[Candidate]:
     """Search DuckDuckGo for wine bottle images across Italian and international e-commerce sites."""
@@ -620,18 +595,30 @@ def process_image(
     fmt: str,
     transparent_only: bool,
     min_source_pct: int = 0,
+    img_type: str | None = None,
 ) -> bytes | None:
     try:
         img = Image.open(io.BytesIO(raw))
     except Exception:
         return None
 
-    # Reject source images that are too small (would produce blurry upscales)
+    src_w, src_h = img.size
+    is_wine = img_type in WINE_TYPES
+
+    # Reject source images that are too small
     if min_source_pct > 0:
-        threshold = min_source_pct / 100
-        src_w, src_h = img.size
-        if src_w < target_w * threshold and src_h < target_h * threshold:
-            return None
+        pct = min_source_pct / 100
+        if is_wine:
+            # Hard check: wine bottles need enough height (tall target) to avoid tiny bottles
+            if src_h < target_h * pct:
+                return None
+            # Reject non-bottle aspect ratios (labels, lifestyle shots, landscape crops)
+            if src_h / max(src_w, 1) < 1.5:
+                return None
+        else:
+            # Generic: either dimension must meet threshold
+            if src_w < target_w * pct and src_h < target_h * pct:
+                return None
 
     if img.mode not in ("RGBA", "LA", "PA"):
         img = img.convert("RGBA")
@@ -711,12 +698,10 @@ def _collect_candidates(
     is_wine = img_type in WINE_TYPES
 
     if is_wine:
-        # Wine-specific: cast a wide net across Vivino + e-commerce + general
-        candidates.extend(search_vivino(query, limit=5))
-        time.sleep(0.3)
-        candidates.extend(search_wine_ecommerce(query, limit=8))
+        # Wine-specific: scoped to Italian/international wine e-commerce, then a wider DDG net
+        candidates.extend(search_wine_ecommerce(query, limit=10))
         time.sleep(0.5)
-        candidates.extend(search_duckduckgo(search_q, limit=6))
+        candidates.extend(search_duckduckgo(search_q, limit=8))
         time.sleep(0.5)
     else:
         # General search
@@ -738,23 +723,12 @@ def _rank_and_probe(
     candidates: list[Candidate], target_w: int, target_h: int,
     img_type: str | None, min_source_pct: int,
 ) -> list[Candidate]:
-    """Phase 2: Probe unknown sizes, score, filter, and rank candidates."""
-    min_dim = max(target_w, target_h) * min_source_pct / 100 if min_source_pct > 0 else 0
+    """Phase 2: Probe unknown sizes, apply hard filters, score, and rank."""
+    is_wine = img_type in WINE_TYPES
+    min_pct = min_source_pct / 100 if min_source_pct > 0 else 0
+    min_height = target_h * min_pct  # for wine, this is the critical dimension (bottles are tall)
 
-    # Probe dimensions for candidates missing size info (up to 10 probes to stay fast)
-    probed = 0
-    for c in candidates:
-        if c.width == 0 and c.height == 0 and probed < 10:
-            c.width, c.height = _probe_image_size(c.url)
-            probed += 1
-
-    # Filter out images that are too small
-    if min_dim > 0:
-        candidates = [c for c in candidates if
-                      c.width == 0 or c.height == 0 or  # unknown size — give benefit of doubt
-                      max(c.width, c.height) >= min_dim]
-
-    # Deduplicate by URL
+    # Dedup by URL first to avoid wasting probe calls
     seen_urls: set[str] = set()
     unique = []
     for c in candidates:
@@ -762,6 +736,37 @@ def _rank_and_probe(
             seen_urls.add(c.url)
             unique.append(c)
     candidates = unique
+
+    # Probe dimensions for ALL candidates with unknown size (wine needs accurate data)
+    probe_cap = 30 if is_wine else 10
+    probed = 0
+    for c in candidates:
+        if c.width == 0 and c.height == 0 and probed < probe_cap:
+            c.width, c.height = _probe_image_size(c.url)
+            probed += 1
+
+    if is_wine:
+        # Hard filters for wine — no benefit of doubt
+        filtered = []
+        for c in candidates:
+            # Must have known dimensions (unknown = reject)
+            if c.width == 0 or c.height == 0:
+                continue
+            # Must be tall enough (≥ min_height, typically ≥840px at 1200 target)
+            if min_height > 0 and c.height < min_height:
+                continue
+            # Must have a bottle-like aspect ratio (h/w ≥ 1.5 excludes labels, lifestyle shots)
+            ratio = c.height / max(c.width, 1)
+            if ratio < 1.5:
+                continue
+            filtered.append(c)
+        candidates = filtered
+    elif min_pct > 0:
+        # Non-wine: soft filter on max dimension
+        min_dim = max(target_w, target_h) * min_pct
+        candidates = [c for c in candidates if
+                      c.width == 0 or c.height == 0 or
+                      max(c.width, c.height) >= min_dim]
 
     # Score and sort
     for c in candidates:
@@ -806,69 +811,80 @@ def download_images_for_query(
         stats["downloaded"] = opts.count
         return stats
 
-    raw_images: list[bytes] = []
+    saved = 0
+    is_wine = img_type in WINE_TYPES
 
     # Direct URL mode — skip search entirely
     if item.url:
         data = fetch_url(item.url)
-        if data:
-            raw_images.append(data)
-        else:
+        if not data:
             failed_log.write(f"{query}\tFailed to download URL: {item.url}\n")
             stats["failed"] = 1
             return stats
-
-    # Logo mode — use legacy direct flow (favicon + DDG)
-    elif img_type == "logo":
-        key = query.lower().strip()
-        domain = DOMAIN_MAP.get(key)
-        if domain:
-            data = fetch_google_favicon(domain)
-            if data:
-                raw_images.append(data)
-        if len(raw_images) < opts.count:
-            raw_images.extend(fetch_duckduckgo_legacy(search_q, opts.count - len(raw_images)))
-
-    # Wine / product / general — use candidate ranking flow
-    else:
-        candidates = _collect_candidates(
-            query, search_q, img_type, google_key, google_id, brave_key,
+        processed = process_image(
+            data, target_w, target_h, opts.padding, background or "white",
+            fmt, opts.transparent_only, opts.min_source_pct, img_type,
         )
+        if processed is None:
+            failed_log.write(f"{query}\tDirect URL image failed validation\n")
+            stats["failed"] = 1
+            return stats
+        fname = f"{base_name}_1.{fmt}"
+        (output_dir / fname).write_bytes(processed)
+        stats["files"].append(fname)
+        stats["downloaded"] = 1
+        return stats
 
-        if candidates:
-            ranked = _rank_and_probe(
-                candidates, target_w, target_h, img_type, opts.min_source_pct,
-            )
+    # Search-rank-validate-download flow
+    candidates = _collect_candidates(
+        query, search_q, img_type, google_key, google_id, brave_key,
+    )
 
-            # Download top candidates until we have enough
-            for c in ranked:
-                if len(raw_images) >= opts.count:
-                    break
-                data = fetch_url(c.url)
-                if data and len(data) > 200:
-                    raw_images.append(data)
-
-    if not raw_images:
-        failed_log.write(f"{query}\tNo images found from any source\n")
+    if not candidates:
+        failed_log.write(f"{query}\tNo candidates found from any source\n")
         stats["failed"] = opts.count
         return stats
 
-    saved = 0
-    for i, raw in enumerate(raw_images[: opts.count], start=1):
-        fname = f"{base_name}_{i}.{fmt}"
+    ranked = _rank_and_probe(
+        candidates, target_w, target_h, img_type, opts.min_source_pct,
+    )
+
+    if not ranked:
+        failed_log.write(f"{query}\tNo candidates passed quality filters "
+                         f"(need height ≥ {int(target_h * opts.min_source_pct / 100)}px, "
+                         f"aspect ratio ≥ 1.5)\n")
+        stats["failed"] = opts.count
+        return stats
+
+    # Download + validate each ranked candidate until we have `count` successful ones.
+    # Try up to 3x the requested count to survive rejections.
+    attempt_limit = opts.count * 3
+    attempts = 0
+    for c in ranked:
+        if saved >= opts.count or attempts >= attempt_limit:
+            break
+        attempts += 1
+
+        fname = f"{base_name}_{saved + 1}.{fmt}"
         fpath = output_dir / fname
 
         if opts.skip_existing and fpath.exists():
             stats["skipped"] += 1
+            saved += 1
             continue
 
+        data = fetch_url(c.url)
+        if not data or len(data) < 200:
+            continue
+
+        # Final validation: the actual downloaded image must pass process_image
+        # which enforces the same strict size rules for wine.
         processed = process_image(
-            raw, target_w, target_h, opts.padding, background or "white",
-            fmt, opts.transparent_only, opts.min_source_pct,
+            data, target_w, target_h, opts.padding, background or "white",
+            fmt, opts.transparent_only, opts.min_source_pct, img_type,
         )
         if processed is None:
-            failed_log.write(f"{query}\tImage too small or processing failed (index {i})\n")
-            stats["failed"] += 1
+            # Move on to next ranked candidate
             continue
 
         fpath.write_bytes(processed)
@@ -877,7 +893,13 @@ def download_images_for_query(
 
     stats["downloaded"] = saved
     if saved < opts.count:
-        stats["failed"] += opts.count - saved - stats["skipped"]
+        missing = opts.count - saved - stats["skipped"]
+        if missing > 0:
+            stats["failed"] += missing
+            failed_log.write(
+                f"{query}\tOnly {saved}/{opts.count} candidates passed validation"
+                f" (searched {len(candidates)}, ranked {len(ranked)})\n"
+            )
 
     return stats
 
@@ -991,7 +1013,7 @@ def main():
     if has_urls:
         sources_available.append("Direct URL")
     if opts.type in WINE_TYPES:
-        sources_available.extend(["Vivino", "Wine E-commerce (.it)"])
+        sources_available.append("Wine E-commerce (Tannico + .it)")
     if opts.type == "logo":
         sources_available.append("Google Favicon")
     if google_key and google_id:

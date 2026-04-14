@@ -32,7 +32,7 @@ def _build_opts(data: dict, is_form: bool = False) -> DownloadOpts:
         size = (300, 300)
 
     img_type = get("type") or None
-    min_src = 50 if img_type in (WINE_TYPES | PRODUCT_TYPES) else 0
+    min_src = 70 if img_type in (WINE_TYPES | PRODUCT_TYPES) else 0
 
     return DownloadOpts(
         size=size,
