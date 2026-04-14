@@ -283,8 +283,10 @@ DOMAIN_MAP = {
     "discord": "discord.com", "netflix": "netflix.com",
 }
 
-# Italian and international wine e-commerce sites with good product photography
+# Italian and international wine e-commerce sites with good product photography.
+# Vivino is first because its product shots and name-matching are the most reliable.
 WINE_ECOMMERCE_SITES = [
+    "vivino.com",
     "tannico.it", "callmewine.com", "xtrawine.com", "vinicum.it",
     "bernabei.it", "vino75.com", "giordanovini.it", "wine.com",
     "wine-searcher.com", "winehouse.it", "enotecaitaliana.it",
@@ -293,6 +295,7 @@ WINE_ECOMMERCE_SITES = [
 
 # Source quality tiers — higher = more trusted product photography
 SOURCE_QUALITY = {
+    "vivino.com": 100,
     "tannico.it": 95, "callmewine.com": 85, "xtrawine.com": 85,
     "vinicum.it": 80, "bernabei.it": 80, "vino75.com": 80,
     "giordanovini.it": 75, "wine.com": 85, "wine-searcher.com": 75,
@@ -306,13 +309,11 @@ SOURCE_QUALITY = {
 def build_search_query(query: str, img_type: str | None, background: str | None) -> str:
     parts = [query]
     if img_type in WINE_TYPES:
-        parts.append("wine bottle front label high resolution")
+        parts.append("wine bottle")
     elif img_type in PRODUCT_TYPES:
-        parts.append("product photo high resolution")
+        parts.append("product photo")
     elif img_type:
         parts.append(img_type)
-    # Only append background to search for generic types — for wine/product,
-    # background is a processing concern, not a search concern.
     if background and background != "none" and img_type not in WINE_TYPES | PRODUCT_TYPES:
         parts.append(f"{background} background")
     return " ".join(parts)
@@ -371,65 +372,116 @@ def _source_from_url(url: str) -> str:
     return "duckduckgo"
 
 
-# Words too common or generic to be useful as relevance signals
+# Wine query structure (per user guidance):
+#   producer (always first)  →  first-name (optional)  →  area/DOC  →  vintage (weakest)
+# Stopwords must NOT include region/area names — those are strong provenance signals.
+# Grape varieties and generic descriptors stay as stopwords because they're too common
+# to differentiate one producer from another.
 _STOPWORDS = {
+    # Generic descriptors
     "wine", "wines", "vino", "bottle", "bottles", "bottiglia", "bottiglie",
     "red", "white", "rose", "rosé", "rosso", "bianco", "rosato",
     "the", "a", "an", "di", "de", "del", "della", "dei", "delle", "da",
     "il", "la", "le", "les", "los", "las", "and", "e", "et",
+    # Classification labels (not the area name itself)
     "doc", "docg", "igt", "igp", "aoc", "aop", "dop",
     "riserva", "reserva", "grand", "gran", "cru", "classico", "classic",
-    "vintage", "annata", "vol", "cl", "ml", "l", "lt", "litre", "liter",
-    "750ml", "1l", "15l", "magnum",
-    # Grape varieties — too common to narrow down a specific wine
+    # Volume / vintage helpers (vintage years are stripped separately as digits)
+    "vintage", "annata", "vol", "cl", "ml", "lt", "litre", "liter",
+    "750ml", "magnum", "nv",
+    # Producer-side generic words
+    "azienda", "agricola", "cantina", "cantine", "tenuta", "tenute",
+    "podere", "fattoria", "vigneti", "vigneto", "domaine", "chateau",
+    # Grape varieties — too common to differentiate producers
     "shiraz", "cabernet", "sauvignon", "merlot", "pinot", "chardonnay",
     "syrah", "grenache", "tempranillo", "sangiovese", "nebbiolo", "grillo",
     "nerello", "mascalese", "aglianico", "montepulciano", "barbera", "dolcetto",
     "vermentino", "fiano", "falanghina", "viognier", "malbec", "zinfandel",
-    "blend", "blanc", "noir", "nero", "bianco", "rosso",
-    # Region/designation words — broad geographic terms
-    "terre", "terra", "tenuta", "tenute", "azienda", "agricola", "cantina",
-    "sicilia", "siciliane", "siciliano", "sicily", "sicilian",
-    "toscana", "toscano", "tuscany", "tuscan", "chianti",
-    "piemonte", "piemontese", "piedmont", "piedmontese",
-    "veneto", "lombardia", "lombardy", "umbria", "marche", "abruzzo",
-    "campania", "puglia", "apulia", "calabria", "sardegna", "sardinia",
-    "italia", "italiano", "italian", "italy",
-    "france", "french", "spain", "spanish", "portugal", "portuguese",
-    "bordeaux", "burgundy", "champagne", "rhone", "loire", "alsace",
+    "catarratto", "spergola", "torbato", "moscato", "passito", "bellone",
+    "cannonau", "blend", "blanc", "noir", "nero", "cuvee",
+    # Search/format noise
     "front", "label", "high", "resolution", "jpg", "png", "jpeg", "webp",
     "product", "image", "photo",
 }
 
 
-def _extract_relevance_tokens(query: str) -> list[str]:
-    """Extract distinctive tokens from a query for relevance matching.
-    Skips stopwords, years, numbers, and short words."""
-    # Lowercase, strip accents, split on non-alphanumeric
+@dataclass
+class WineRelevance:
+    """Structured tokens parsed from a wine query for relevance matching.
+
+    Wine query structure (per user guidance):
+        producer  ["wine-name"]  [first-name]  area/DOC  [vintage]
+
+    All fields are lowercase ASCII tokens (accents/punctuation stripped)."""
+    producer: list[str] = field(default_factory=list)   # mandatory match
+    wine_name: list[str] = field(default_factory=list)  # mandatory when present (quoted)
+    secondary: list[str] = field(default_factory=list)  # area / first-name (bonus)
+
+
+def _extract_relevance_tokens(query: str) -> WineRelevance:
+    """Parse a wine query into structured relevance tokens.
+
+    The producer is always the leading distinctive token(s) and is MANDATORY.
+    A "double-quoted" phrase (or curly-quoted) is treated as the specific wine name
+    and is also MANDATORY when present — this is how we distinguish two cuvées
+    from the same producer (e.g. Sassicaia vs Guidalberto from Tenuta San Guido).
+    Vintage years are dropped — labels rarely change year-to-year."""
     import unicodedata
-    normalized = unicodedata.normalize("NFKD", query.lower())
-    normalized = "".join(c for c in normalized if not unicodedata.combining(c))
-    tokens = re.findall(r"[a-z0-9]+", normalized)
-    distinctive = []
-    for t in tokens:
-        if len(t) < 4:
-            continue
-        if t in _STOPWORDS:
-            continue
-        if t.isdigit():  # skip years and pure numbers
-            continue
-        distinctive.append(t)
-    return distinctive
+
+    def _norm(s: str) -> str:
+        s = unicodedata.normalize("NFKD", s.lower())
+        return "".join(c for c in s if not unicodedata.combining(c))
+
+    _VOLUME_RE = re.compile(r"^\d+(ml|cl|l|lt)$")
+
+    def _tokens(s: str) -> list[str]:
+        out = []
+        for t in re.findall(r"[a-z0-9]+", _norm(s)):
+            if len(t) < 3:
+                continue
+            if t in _STOPWORDS:
+                continue
+            if t.isdigit():
+                continue
+            if _VOLUME_RE.match(t):  # 500ml, 75cl, 1l, etc.
+                continue
+            out.append(t)
+        return out
+
+    # Normalise curly quotes to straight ASCII so the regex catches them
+    cleaned = (query.replace("\u201c", '"').replace("\u201d", '"')
+                    .replace("\u2018", '"').replace("\u2019", '"'))
+
+    quoted_phrases = re.findall(r'"([^"]+)"', cleaned)
+    wine_name_tokens: list[str] = []
+    for phrase in quoted_phrases:
+        wine_name_tokens.extend(_tokens(phrase))
+
+    # Strip the quoted parts so they don't double-count in producer extraction
+    unquoted = re.sub(r'"[^"]*"', " ", cleaned)
+    distinctive = _tokens(unquoted)
+
+    if not distinctive and not wine_name_tokens:
+        return WineRelevance()
+
+    # Producer = first 1–2 leading tokens (excluding any quoted wine name).
+    # Two-word producers are common (Anna Maria, Sella Mosca, Podere Pradarolo).
+    if len(distinctive) >= 3:
+        producer = distinctive[:2]
+        secondary = distinctive[2:]
+    elif len(distinctive) == 2:
+        producer = distinctive[:1]
+        secondary = distinctive[1:]
+    else:
+        producer = distinctive[:1]
+        secondary = []
+
+    return WineRelevance(producer=producer, wine_name=wine_name_tokens, secondary=secondary)
 
 
-def _candidate_matches_query(candidate: "Candidate", tokens: list[str]) -> bool:
-    """Check if at least one distinctive query token appears in the candidate's URL or title."""
-    if not tokens:
-        return True  # no tokens = can't judge; accept
+def _haystack_for(candidate: "Candidate") -> str:
     import unicodedata
     from urllib.parse import urlparse, unquote
-
-    # Combine URL path + query + title into one compacted search haystack
     try:
         parsed = urlparse(candidate.url)
         path = unquote(parsed.path + "?" + (parsed.query or ""))
@@ -438,12 +490,41 @@ def _candidate_matches_query(candidate: "Candidate", tokens: list[str]) -> bool:
     haystack = (path + " " + (candidate.title or "")).lower()
     haystack = unicodedata.normalize("NFKD", haystack)
     haystack = "".join(c for c in haystack if not unicodedata.combining(c))
-    haystack_compact = re.sub(r"[^a-z0-9]+", "", haystack)
+    return re.sub(r"[^a-z0-9]+", "", haystack)
 
-    for t in tokens:
-        if t in haystack_compact:
-            return True
-    return False
+
+def _candidate_matches_relevance(candidate: "Candidate", rel: "WineRelevance") -> bool:
+    """Strict wine relevance:
+      1. ALL producer tokens must appear in URL/title.
+      2. If a quoted wine-name was supplied, ALL wine-name tokens must also appear.
+      3. If neither wine-name nor secondary tokens exist, producer alone is enough
+         only when producer is highly specific (≥8 chars combined).
+      4. Otherwise at least one secondary token (area / first-name) must also match.
+    """
+    if not rel.producer and not rel.wine_name:
+        return True
+
+    haystack = _haystack_for(candidate)
+
+    for t in rel.producer:
+        if t not in haystack:
+            return False
+
+    if rel.wine_name:
+        for t in rel.wine_name:
+            if t not in haystack:
+                return False
+        return True
+
+    if rel.secondary:
+        for t in rel.secondary:
+            if t in haystack:
+                return True
+        # No secondary match — accept only if producer is very specific
+        return sum(len(t) for t in rel.producer) >= 8
+
+    # No secondary tokens at all (very short query) — producer alone must be specific
+    return sum(len(t) for t in rel.producer) >= 8
 
 
 def _probe_image_size(url: str) -> tuple[int, int]:
@@ -462,37 +543,45 @@ def _probe_image_size(url: str) -> tuple[int, int]:
 
 
 def score_candidate(c: Candidate, target_w: int, target_h: int, img_type: str | None) -> float:
-    """Score a candidate. Higher is better."""
+    """Score a candidate. Higher is better. For wine, only source quality and
+    image HEIGHT matter — width is irrelevant, bottle proportions are always similar."""
     s = 0.0
 
-    # Source quality (0-90 points)
+    # Source quality (0-100 points)
     s += SOURCE_QUALITY.get(c.source, 30)
 
-    # Resolution bonus (0-100 points) — scaled by how close to or above target
+    is_wine = img_type in WINE_TYPES
+    if is_wine:
+        # Wine: score purely on height — bigger is always better up to 2x target
+        if c.height > 0:
+            if c.height >= target_h * 1.2:
+                s += 120
+            elif c.height >= target_h:
+                s += 100
+            elif c.height >= target_h * 0.85:
+                s += 70
+            elif c.height >= target_h * 0.75:
+                s += 40
+            else:
+                s += 0
+        else:
+            s += 20  # unknown — neutral-low
+        return s
+
+    # Non-wine: score on max dimension
     if c.width > 0 and c.height > 0:
         max_dim = max(c.width, c.height)
         target_max = max(target_w, target_h)
         if max_dim >= target_max:
-            s += 100  # full marks — no upscaling needed
+            s += 100
         elif max_dim >= target_max * 0.7:
             s += 70
         elif max_dim >= target_max * 0.5:
             s += 40
         else:
-            s += 10  # very small — penalise heavily
+            s += 10
     else:
-        s += 30  # unknown size — neutral
-
-    # Aspect ratio bonus for bottles (0-30 points) — tall/portrait preferred
-    if img_type in WINE_TYPES and c.width > 0 and c.height > 0:
-        ratio = c.height / c.width
-        if 2.0 <= ratio <= 4.0:
-            s += 30  # ideal bottle proportion
-        elif 1.3 <= ratio < 2.0:
-            s += 20  # decent portrait
-        elif ratio >= 1.0:
-            s += 10  # square-ish
-        # landscape images get 0 bonus
+        s += 30
 
     return s
 
@@ -501,9 +590,29 @@ def score_candidate(c: Candidate, target_w: int, target_h: int, img_type: str | 
 # Source functions — return Candidate lists (no downloading of image bytes)
 # ---------------------------------------------------------------------------
 
+def search_vivino(query: str, limit: int = 10) -> list[Candidate]:
+    """Vivino-only DuckDuckGo image search.
+    Vivino has the most reliable producer-name pairing for wines."""
+    search_q = f"{query} wine site:vivino.com"
+    results = _ddgs_image_search(search_q, max_results=limit)
+    candidates = []
+    for r in results:
+        url = r.get("image", "")
+        if not url:
+            continue
+        w = int(r.get("width", 0) or 0)
+        h = int(r.get("height", 0) or 0)
+        title = str(r.get("title", "") or "")
+        candidates.append(Candidate(url=url, source=_source_from_url(url),
+                                    width=w, height=h, title=title))
+    return candidates
+
+
 def search_wine_ecommerce(query: str, limit: int = 8) -> list[Candidate]:
     """Search DuckDuckGo for wine bottle images across Italian and international e-commerce sites."""
-    site_clause = " OR ".join(f"site:{s}" for s in WINE_ECOMMERCE_SITES[:8])
+    # Skip Vivino here — it's queried separately by search_vivino so it has its own slot
+    sites = [s for s in WINE_ECOMMERCE_SITES if s != "vivino.com"][:8]
+    site_clause = " OR ".join(f"site:{s}" for s in sites)
     search_q = f"{query} wine bottle ({site_clause})"
     results = _ddgs_image_search(search_q, max_results=limit)
 
@@ -637,33 +746,171 @@ def fetch_duckduckgo_legacy(query: str, count: int) -> list[bytes]:
 # Image processing
 # ---------------------------------------------------------------------------
 
-def _auto_remove_white_bg(img: Image.Image, threshold: int = 240) -> Image.Image:
-    """Remove white/near-white background by setting bright pixels to alpha=0.
-    Only triggers if image corners are near-white (indicates studio/product shot)."""
-    img = img.convert("RGBA")
-    w, h = img.size
-    if w < 4 or h < 4:
-        return img
+#: Wine processing thresholds (see user guidance).
+WINE_MIN_BOTTLE_HEIGHT_PX = 800    # absolute floor: bottle bbox must be at least this tall
+WINE_MIN_BBOX_COVERAGE = 0.65      # bottle must cover ≥65% of source image height (rejects lifestyle/scenic shots)
+WINE_MIN_BOTTLE_ASPECT = 1.6       # h/w ≥ 1.6 excludes labels and landscape crops
+WINE_OUTPUT_W = 900                # final canvas width
+WINE_OUTPUT_H = 1200               # final canvas height
+WINE_OUTPUT_PADDING_PX = 40        # equal top/bottom padding on output canvas
 
-    # Sample corner pixels to decide if background is white
-    corners = [img.getpixel((0, 0)), img.getpixel((w - 1, 0)),
-               img.getpixel((0, h - 1)), img.getpixel((w - 1, h - 1))]
-    corner_min = min(min(c[0], c[1], c[2]) for c in corners)
-    if corner_min < threshold - 10:
-        # Corners aren't white enough — don't risk chewing into the subject
-        return img
 
-    # Build a luminance mask from the max of R/G/B channels, then derive new alpha
+def _sample_background_color(img: Image.Image) -> tuple[int, int, int] | None:
+    """Sample four corners to determine a consistent background color.
+    Returns (r,g,b) if corners agree (tolerance ≤25 per channel), else None."""
+    rgb = img.convert("RGB")
+    w, h = rgb.size
+    if w < 20 or h < 20:
+        return None
+    pad = 3
+    corners = [
+        rgb.getpixel((pad, pad)),
+        rgb.getpixel((w - 1 - pad, pad)),
+        rgb.getpixel((pad, h - 1 - pad)),
+        rgb.getpixel((w - 1 - pad, h - 1 - pad)),
+    ]
+    rs = [c[0] for c in corners]
+    gs = [c[1] for c in corners]
+    bs = [c[2] for c in corners]
+    if max(rs) - min(rs) > 25 or max(gs) - min(gs) > 25 or max(bs) - min(bs) > 25:
+        return None
+    return (sum(rs) // 4, sum(gs) // 4, sum(bs) // 4)
+
+
+def _content_bbox(img: Image.Image, bg: tuple[int, int, int],
+                  threshold: int = 28) -> tuple[int, int, int, int] | None:
+    """Find the bounding box of non-background pixels. Pure-PIL implementation.
+    Builds a mask of |pixel - bg| > threshold for any channel."""
     from PIL import ImageChops
-    r, g, b, a = img.split()
-    max_rgb = ImageChops.lighter(ImageChops.lighter(r, g), b)
-    # Soft threshold: full transparency above `threshold`, full opacity below `threshold - 30`
-    lo, hi = threshold - 30, threshold
-    new_alpha = max_rgb.point(lambda p: 0 if p >= hi else (255 if p <= lo else int(255 * (hi - p) / (hi - lo))))
-    # Combine with existing alpha (in case source already had partial transparency)
-    combined = ImageChops.multiply(a, new_alpha)
-    img.putalpha(combined)
-    return img
+    rgb = img.convert("RGB")
+    # Fill-image same size as rgb with the background colour, then diff
+    bg_img = Image.new("RGB", rgb.size, bg)
+    diff = ImageChops.difference(rgb, bg_img)
+    # Flatten to a single-channel max-of-RGB
+    r, g, b = diff.split()
+    max_diff = ImageChops.lighter(ImageChops.lighter(r, g), b)
+    mask = max_diff.point(lambda p: 255 if p > threshold else 0)
+    return mask.getbbox()
+
+
+def _flatten_to_white(img: Image.Image) -> Image.Image:
+    """Flatten any alpha channel onto a white background."""
+    if img.mode in ("RGBA", "LA", "PA"):
+        rgba = img.convert("RGBA")
+        canvas = Image.new("RGB", rgba.size, (255, 255, 255))
+        canvas.paste(rgba, mask=rgba.split()[-1])
+        return canvas
+    return img.convert("RGB")
+
+
+def _replace_bg_with_white(img: Image.Image, bg: tuple[int, int, int],
+                           threshold: int = 28) -> Image.Image:
+    """Replace pixels close to `bg` with pure white. Preserves everything else."""
+    from PIL import ImageChops
+    rgb = img.convert("RGB")
+    bg_img = Image.new("RGB", rgb.size, bg)
+    diff = ImageChops.difference(rgb, bg_img)
+    r, g, b = diff.split()
+    max_diff = ImageChops.lighter(ImageChops.lighter(r, g), b)
+    # content mask: 255 where pixel differs from bg, 0 where it matches
+    mask = max_diff.point(lambda p: 255 if p > threshold else 0).convert("L")
+    white = Image.new("RGB", rgb.size, (255, 255, 255))
+    white.paste(rgb, mask=mask)
+    return white
+
+
+def _process_wine_image(raw: bytes) -> tuple[bytes | None, str]:
+    """Wine-specific pipeline. Returns (jpg_bytes, reason_if_rejected).
+    Reason is '' on success.
+
+    Pipeline:
+      1. Load + flatten to RGB/white
+      2. Validate source height ≥ WINE_MIN_SOURCE_HEIGHT
+      3. Sample corners for solid background (reject busy/lifestyle shots)
+      4. Find content bounding box
+      5. Validate bbox height ≥ WINE_MIN_BOTTLE_HEIGHT_PX
+      6. Validate bbox covers ≥ WINE_MIN_BBOX_COVERAGE of source height
+      7. Validate bbox aspect (h/w) ≥ WINE_MIN_BOTTLE_ASPECT (excludes labels)
+      8. Replace any non-white bg with white
+      9. Crop to bbox (with small safety margin)
+     10. Resize to fit 1200×900 canvas with equal top/bottom padding
+     11. Save as JPEG 92%
+    """
+    try:
+        img = Image.open(io.BytesIO(raw))
+        img.load()
+    except Exception as e:
+        return None, f"pil_open_failed: {e}"
+
+    src_w, src_h = img.size
+    if src_h < WINE_MIN_SOURCE_HEIGHT:
+        return None, f"source_height_too_small ({src_h}px < {WINE_MIN_SOURCE_HEIGHT}px)"
+
+    # Flatten alpha onto white so bbox detection is consistent
+    flat = _flatten_to_white(img)
+
+    bg = _sample_background_color(flat)
+    if bg is None:
+        return None, "busy_or_inconsistent_background"
+
+    bbox = _content_bbox(flat, bg)
+    if bbox is None:
+        return None, "no_content_detected"
+
+    left, top, right, bottom = bbox
+    bbox_h = bottom - top
+    bbox_w = right - left
+    if bbox_w <= 0 or bbox_h <= 0:
+        return None, "empty_bbox"
+
+    if bbox_h < WINE_MIN_BOTTLE_HEIGHT_PX:
+        return None, f"bottle_too_short ({bbox_h}px < {WINE_MIN_BOTTLE_HEIGHT_PX}px)"
+
+    coverage = bbox_h / src_h
+    if coverage < WINE_MIN_BBOX_COVERAGE:
+        return None, f"bottle_coverage_too_low ({coverage:.0%} < {int(WINE_MIN_BBOX_COVERAGE*100)}%)"
+
+    aspect = bbox_h / bbox_w
+    if aspect < WINE_MIN_BOTTLE_ASPECT:
+        return None, f"not_bottle_shape (h/w={aspect:.2f} < {WINE_MIN_BOTTLE_ASPECT})"
+
+    # Replace non-white background with pure white (always safe; ensures
+    # the crop paste onto the final canvas is seamless).
+    whitened = _replace_bg_with_white(flat, bg)
+
+    # Crop to content bbox with a tiny 4px safety margin on each side
+    margin = 4
+    crop_box = (
+        max(0, left - margin),
+        max(0, top - margin),
+        min(src_w, right + margin),
+        min(src_h, bottom + margin),
+    )
+    cropped = whitened.crop(crop_box)
+
+    # Resize so the bottle fits inside the output canvas minus vertical padding.
+    # Preserve bottle aspect; width is free — we pad horizontally as needed.
+    target_inner_h = WINE_OUTPUT_H - 2 * WINE_OUTPUT_PADDING_PX
+    scale = target_inner_h / cropped.height
+    new_w = max(1, int(round(cropped.width * scale)))
+    new_h = target_inner_h
+    resized = cropped.resize((new_w, new_h), Image.LANCZOS)
+
+    # If resized width exceeds canvas, rescale so width fits and re-center
+    if resized.width > WINE_OUTPUT_W:
+        scale2 = WINE_OUTPUT_W / resized.width
+        new_w2 = WINE_OUTPUT_W
+        new_h2 = max(1, int(round(resized.height * scale2)))
+        resized = resized.resize((new_w2, new_h2), Image.LANCZOS)
+
+    canvas = Image.new("RGB", (WINE_OUTPUT_W, WINE_OUTPUT_H), (255, 255, 255))
+    x = (WINE_OUTPUT_W - resized.width) // 2
+    y = (WINE_OUTPUT_H - resized.height) // 2  # vertically centered
+    canvas.paste(resized, (x, y))
+
+    buf = io.BytesIO()
+    canvas.save(buf, format="JPEG", quality=92, optimize=True)
+    return buf.getvalue(), ""
 
 
 def process_image(
@@ -677,42 +924,27 @@ def process_image(
     min_source_pct: int = 0,
     img_type: str | None = None,
 ) -> bytes | None:
+    """Non-wine processing path — unchanged. Wine uses `_process_wine_image` directly."""
     try:
         img = Image.open(io.BytesIO(raw))
     except Exception:
         return None
 
     src_w, src_h = img.size
-    is_wine = img_type in WINE_TYPES
 
-    # Reject source images that are too small
     if min_source_pct > 0:
         pct = min_source_pct / 100
-        if is_wine:
-            # Hard check: wine bottles need enough height (tall target) to avoid tiny bottles
-            if src_h < target_h * pct:
-                return None
-            # Reject non-bottle aspect ratios (labels, lifestyle shots, landscape crops)
-            if src_h / max(src_w, 1) < 1.3:
-                return None
-        else:
-            # Generic: either dimension must meet threshold
-            if src_w < target_w * pct and src_h < target_h * pct:
-                return None
+        if src_w < target_w * pct and src_h < target_h * pct:
+            return None
 
     if img.mode not in ("RGBA", "LA", "PA"):
         img = img.convert("RGBA")
 
-    # Auto-remove white background when transparent output is requested
     want_transparent = fmt in ("png", "webp") and bg in ("transparent", "none")
-    if want_transparent:
-        img = _auto_remove_white_bg(img)
-
     if transparent_only:
         if img.mode != "RGBA" or img.getextrema()[3][0] == 255:
             return None
 
-    # Calculate inner box after padding
     if padding_pct > 0:
         scale = (100 - padding_pct) / 100
         inner_w = int(target_w * scale)
@@ -720,22 +952,18 @@ def process_image(
     else:
         inner_w, inner_h = target_w, target_h
 
-    # Resize to fit within inner box, maintaining aspect ratio
     img.thumbnail((inner_w, inner_h), Image.LANCZOS)
 
-    # Determine background
     if want_transparent:
         canvas = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 0))
     else:
         bg_color = (255, 255, 255) if bg in ("white", "transparent", "none") else (30, 30, 30)
         canvas = Image.new("RGBA", (target_w, target_h), (*bg_color, 255))
 
-    # Centre paste
     x = (target_w - img.width) // 2
     y = (target_h - img.height) // 2
     canvas.paste(img, (x, y), img if img.mode == "RGBA" else None)
 
-    # Convert for output format
     buf = io.BytesIO()
     if fmt == "jpg":
         out = canvas.convert("RGB")
@@ -778,11 +1006,16 @@ def _collect_candidates(
     is_wine = img_type in WINE_TYPES
 
     if is_wine:
-        # Wine-specific: scoped to Italian/international wine e-commerce, then a wider DDG net
+        # Wine-specific waterfall:
+        # 1) Vivino (most reliable producer/wine-name pairing)
+        # 2) Italian + international wine e-commerce
+        # 3) Wider DDG net as a fallback
+        candidates.extend(search_vivino(query, limit=12))
+        time.sleep(0.4)
         candidates.extend(search_wine_ecommerce(query, limit=10))
-        time.sleep(0.5)
+        time.sleep(0.4)
         candidates.extend(search_duckduckgo(search_q, limit=8))
-        time.sleep(0.5)
+        time.sleep(0.4)
     else:
         # General search
         candidates.extend(search_duckduckgo(search_q, limit=8))
@@ -799,16 +1032,22 @@ def _collect_candidates(
     return candidates
 
 
+#: Minimum source image HEIGHT (in pixels) to qualify as wine bottle product shot.
+#: We don't care about width. Bottles cover most of the frame in e-commerce shots,
+#: so 900px image height roughly means the bottle itself is ≥800px.
+WINE_MIN_SOURCE_HEIGHT = 900
+
+
 def _rank_and_probe(
     candidates: list[Candidate], target_w: int, target_h: int,
     img_type: str | None, min_source_pct: int, query: str = "",
 ) -> list[Candidate]:
-    """Phase 2: Probe unknown sizes, apply hard filters, score, and rank."""
+    """Phase 2: Probe unknown sizes, apply hard filters, score, and rank.
+    For wine: filter by (a) producer-strict relevance, (b) height ≥ WINE_MIN_SOURCE_HEIGHT."""
     is_wine = img_type in WINE_TYPES
     min_pct = min_source_pct / 100 if min_source_pct > 0 else 0
-    min_height = target_h * min_pct  # for wine, this is the critical dimension (bottles are tall)
 
-    # Dedup by URL first to avoid wasting probe calls
+    # Dedup by URL first
     seen_urls: set[str] = set()
     unique = []
     for c in candidates:
@@ -817,15 +1056,14 @@ def _rank_and_probe(
             unique.append(c)
     candidates = unique
 
-    # Relevance filter: for wine, reject candidates whose URL contains no query term.
-    # This catches false-positive matches from wine.com/etc. that return unrelated wines.
+    # Strict producer + wine-name relevance for wine
     if is_wine and query:
-        tokens = _extract_relevance_tokens(query)
-        if tokens:
-            candidates = [c for c in candidates if _candidate_matches_query(c, tokens)]
+        rel = _extract_relevance_tokens(query)
+        if rel.producer or rel.wine_name:
+            candidates = [c for c in candidates if _candidate_matches_relevance(c, rel)]
 
-    # Probe dimensions for ALL candidates with unknown size (wine needs accurate data)
-    probe_cap = 30 if is_wine else 10
+    # Probe dimensions for unknown-size candidates
+    probe_cap = 40 if is_wine else 10
     probed = 0
     for c in candidates:
         if c.width == 0 and c.height == 0 and probed < probe_cap:
@@ -833,29 +1071,21 @@ def _rank_and_probe(
             probed += 1
 
     if is_wine:
-        # Hard filters for wine — no benefit of doubt
+        # Height-only hard filter. Unknown dimensions = reject.
         filtered = []
         for c in candidates:
-            # Must have known dimensions (unknown = reject)
-            if c.width == 0 or c.height == 0:
+            if c.height == 0:
                 continue
-            # Must be tall enough (≥ min_height, typically ≥840px at 1200 target)
-            if min_height > 0 and c.height < min_height:
-                continue
-            # Must have a bottle-like aspect ratio (h/w ≥ 1.3 excludes labels, lifestyle shots)
-            ratio = c.height / max(c.width, 1)
-            if ratio < 1.3:
+            if c.height < WINE_MIN_SOURCE_HEIGHT:
                 continue
             filtered.append(c)
         candidates = filtered
     elif min_pct > 0:
-        # Non-wine: soft filter on max dimension
         min_dim = max(target_w, target_h) * min_pct
         candidates = [c for c in candidates if
                       c.width == 0 or c.height == 0 or
                       max(c.width, c.height) >= min_dim]
 
-    # Score and sort
     for c in candidates:
         c.score = score_candidate(c, target_w, target_h, img_type)
     candidates.sort(key=lambda c: c.score, reverse=True)
@@ -882,6 +1112,12 @@ def download_images_for_query(
     query = item.query or "image"
     base_name = sanitise_filename(item.filename or query)
 
+    # Wine pipeline: force JPG+white output and 1200×900 canvas regardless of request.
+    if img_type in WINE_TYPES:
+        fmt = "jpg"
+        background = "white"
+        target_w, target_h = WINE_OUTPUT_W, WINE_OUTPUT_H
+
     search_q = build_search_query(query, img_type, background)
 
     # Check skip-existing
@@ -901,19 +1137,25 @@ def download_images_for_query(
     saved = 0
     is_wine = img_type in WINE_TYPES
 
-    # Direct URL mode — skip search entirely
+    def _process(raw_bytes: bytes) -> tuple[bytes | None, str]:
+        if is_wine:
+            return _process_wine_image(raw_bytes)
+        out = process_image(
+            raw_bytes, target_w, target_h, opts.padding, background or "white",
+            fmt, opts.transparent_only, opts.min_source_pct, img_type,
+        )
+        return (out, "" if out is not None else "process_image_rejected")
+
+    # Direct URL mode — kept for non-wine; not the focus of optimization.
     if item.url:
         data = fetch_url(item.url)
         if not data:
             failed_log.write(f"{query}\tFailed to download URL: {item.url}\n")
             stats["failed"] = 1
             return stats
-        processed = process_image(
-            data, target_w, target_h, opts.padding, background or "white",
-            fmt, opts.transparent_only, opts.min_source_pct, img_type,
-        )
+        processed, reason = _process(data)
         if processed is None:
-            failed_log.write(f"{query}\tDirect URL image failed validation\n")
+            failed_log.write(f"{query}\tDirect URL rejected: {reason}\n")
             stats["failed"] = 1
             return stats
         fname = f"{base_name}_1.{fmt}"
@@ -937,16 +1179,23 @@ def download_images_for_query(
     )
 
     if not ranked:
-        failed_log.write(f"{query}\tNo candidates passed quality + relevance filters "
-                         f"(need height ≥ {int(target_h * opts.min_source_pct / 100)}px, "
-                         f"aspect ratio ≥ 1.3, query match)\n")
+        if is_wine:
+            failed_log.write(
+                f"{query}\tNo candidates passed wine filters "
+                f"(need producer match + source height ≥ {WINE_MIN_SOURCE_HEIGHT}px) "
+                f"[searched={len(candidates)}]\n"
+            )
+        else:
+            failed_log.write(f"{query}\tNo candidates passed quality + relevance filters\n")
         stats["failed"] = opts.count
         return stats
 
-    # Download + validate each ranked candidate until we have `count` successful ones.
-    # Try up to 3x the requested count to survive rejections.
-    attempt_limit = opts.count * 3
+    # For wine we try up to 8x the requested count because content-bbox validation
+    # rejects more aggressively than the cheap probe filter.
+    attempt_limit = opts.count * (8 if is_wine else 3)
     attempts = 0
+    rejection_reasons: list[str] = []
+
     for c in ranked:
         if saved >= opts.count or attempts >= attempt_limit:
             break
@@ -962,16 +1211,12 @@ def download_images_for_query(
 
         data = fetch_url(c.url)
         if not data or len(data) < 200:
+            rejection_reasons.append(f"{c.source}: fetch_failed")
             continue
 
-        # Final validation: the actual downloaded image must pass process_image
-        # which enforces the same strict size rules for wine.
-        processed = process_image(
-            data, target_w, target_h, opts.padding, background or "white",
-            fmt, opts.transparent_only, opts.min_source_pct, img_type,
-        )
+        processed, reason = _process(data)
         if processed is None:
-            # Move on to next ranked candidate
+            rejection_reasons.append(f"{c.source}: {reason}")
             continue
 
         fpath.write_bytes(processed)
@@ -983,9 +1228,11 @@ def download_images_for_query(
         missing = opts.count - saved - stats["skipped"]
         if missing > 0:
             stats["failed"] += missing
+            tail = "; ".join(rejection_reasons[:6]) if rejection_reasons else "no_attempts"
             failed_log.write(
-                f"{query}\tOnly {saved}/{opts.count} candidates passed validation"
-                f" (searched {len(candidates)}, ranked {len(ranked)})\n"
+                f"{query}\tOnly {saved}/{opts.count} passed validation "
+                f"(searched={len(candidates)}, ranked={len(ranked)}, attempted={attempts}) "
+                f"reasons: {tail}\n"
             )
 
     return stats

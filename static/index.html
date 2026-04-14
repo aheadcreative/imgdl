@@ -18,94 +18,10 @@
 </head>
 <body class="bg-gray-50 min-h-screen">
 
-  <!-- Header -->
-  <header class="bg-white border-b border-gray-200 sticky top-0 z-10">
-    <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
-      <div>
-        <h1 class="text-xl font-semibold text-gray-900">imgdl</h1>
-        <p class="text-sm text-gray-500">Download, resize, and save images from text descriptions</p>
-      </div>
-      <div class="flex gap-2">
-        <button onclick="switchTab('single')" id="tab-single"
-                class="tab-btn px-4 py-2 rounded-lg text-sm font-medium bg-indigo-50 text-indigo-700">
-          Single Query
-        </button>
-        <button onclick="switchTab('batch')" id="tab-batch"
-                class="tab-btn px-4 py-2 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100">
-          Batch Upload
-        </button>
-      </div>
-    </div>
-  </header>
-
   <main class="max-w-6xl mx-auto px-6 py-8">
 
-    <!-- Single Query Tab -->
-    <div id="panel-single">
-      <form id="single-form" class="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">Query or URL</label>
-          <input type="text" name="query" required placeholder='e.g. "Anthropic logo" or https://...'
-                 class="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-sm">
-        </div>
-
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">Size</label>
-            <input type="text" name="size" id="single-size" value="1200x1200" placeholder="WxH"
-                   class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">Type</label>
-            <select name="type" id="single-type" onchange="onTypeChange('single')"
-                    class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
-              <option value="bottle" selected>Wine Bottle</option>
-            </select>
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">Background</label>
-            <select name="background" class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
-              <option value="">Default</option>
-              <option value="transparent" selected>Transparent</option>
-              <option value="white">White</option>
-              <option value="dark">Dark</option>
-              <option value="none">None</option>
-            </select>
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">Format</label>
-            <select name="format" class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
-              <option value="png" selected>PNG</option>
-              <option value="jpg">JPG</option>
-              <option value="webp">WebP</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="grid grid-cols-2 gap-4">
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">Count <span id="count-val" class="text-gray-400">(1)</span></label>
-            <input type="range" name="count" min="1" max="5" value="1"
-                   oninput="document.getElementById('count-val').textContent='('+this.value+')'"
-                   class="w-full accent-indigo-600">
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">Padding <span id="padding-val" class="text-gray-400">(0%)</span></label>
-            <input type="range" name="padding" min="0" max="30" value="0"
-                   oninput="document.getElementById('padding-val').textContent='('+this.value+'%)'"
-                   class="w-full accent-indigo-600">
-          </div>
-        </div>
-
-        <button type="submit" id="btn-single"
-                class="w-full bg-indigo-600 text-white py-2.5 rounded-lg font-medium hover:bg-indigo-700 transition text-sm">
-          Download
-        </button>
-      </form>
-    </div>
-
-    <!-- Batch Tab -->
-    <div id="panel-batch" class="hidden">
+    <!-- Batch -->
+    <div id="panel-batch">
       <div class="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
 
         <!-- Sub-tabs: Paste List vs File Upload -->
@@ -168,12 +84,12 @@ Example:
         <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">Default Size</label>
-            <input type="text" id="batch-size" value="1200x1200"
+            <input type="text" id="batch-size" value="900x1200"
                    class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">
           </div>
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">Default Type</label>
-            <select id="batch-type" onchange="onTypeChange('batch')"
+            <select id="batch-type" onchange="onTypeChange()"
                     class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
               <option value="bottle" selected>Wine Bottle</option>
             </select>
@@ -181,17 +97,15 @@ Example:
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">Default Bg</label>
             <select id="batch-bg" class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
-              <option value="">Default</option>
-              <option value="transparent" selected>Transparent</option>
-              <option value="white">White</option>
+              <option value="white" selected>White</option>
               <option value="dark">Dark</option>
             </select>
           </div>
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">Default Format</label>
             <select id="batch-format" class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
-              <option value="png" selected>PNG</option>
-              <option value="jpg">JPG</option>
+              <option value="jpg" selected>JPG</option>
+              <option value="png">PNG</option>
               <option value="webp">WebP</option>
             </select>
           </div>
@@ -285,43 +199,21 @@ Example:
   ref.appendChild(table);
 })();
 
-// Tab switching
-function switchTab(tab) {
-  document.querySelectorAll('.tab-btn').forEach(b => {
-    b.classList.remove('bg-indigo-50', 'text-indigo-700');
-    b.classList.add('text-gray-600');
-  });
-  document.getElementById('tab-' + tab).classList.add('bg-indigo-50', 'text-indigo-700');
-  document.getElementById('tab-' + tab).classList.remove('text-gray-600');
-  document.getElementById('panel-single').classList.toggle('hidden', tab !== 'single');
-  document.getElementById('panel-batch').classList.toggle('hidden', tab !== 'batch');
+// Auto-update size, background and format when type is wine.
+// The backend forces 900x1200 JPG white regardless of UI choice, but we mirror
+// it here so the user sees what will actually happen.
+const WINE_TYPES = new Set(['bottle', 'wine']);
+const WINE_DEFAULTS = { size: '900x1200', bg: 'white', format: 'jpg' };
+
+function onTypeChange() {
+  const typeVal = document.getElementById('batch-type').value;
+  if (!WINE_TYPES.has(typeVal)) return;
+  document.getElementById('batch-size').value = WINE_DEFAULTS.size;
+  document.getElementById('batch-bg').value = WINE_DEFAULTS.bg;
+  document.getElementById('batch-format').value = WINE_DEFAULTS.format;
 }
 
-// Auto-update size and background when type changes to wine/product
-const ECOMMERCE_TYPES = new Set(['bottle', 'wine', 'product', 'product photo']);
-const SIZE_DEFAULTS = { ecommerce: '1200x1200', other: '300x300' };
-const BG_DEFAULTS = { ecommerce: 'white', other: 'transparent' };
-
-function onTypeChange(panel) {
-  const isEcom = (val) => ECOMMERCE_TYPES.has(val);
-  if (panel === 'single') {
-    const typeVal = document.getElementById('single-type').value;
-    const sizeEl = document.getElementById('single-size');
-    const bgEl = document.querySelector('#single-form select[name="background"]');
-    if (isEcom(typeVal)) {
-      sizeEl.value = SIZE_DEFAULTS.ecommerce;
-      bgEl.value = BG_DEFAULTS.ecommerce;
-    }
-  } else {
-    const typeVal = document.getElementById('batch-type').value;
-    const sizeEl = document.getElementById('batch-size');
-    const bgEl = document.getElementById('batch-bg');
-    if (isEcom(typeVal)) {
-      sizeEl.value = SIZE_DEFAULTS.ecommerce;
-      bgEl.value = BG_DEFAULTS.ecommerce;
-    }
-  }
-}
+document.addEventListener('DOMContentLoaded', onTypeChange);
 
 // Batch sub-tab switching (paste vs file)
 let batchMode = 'paste';
@@ -336,22 +228,6 @@ function switchBatchMode(mode) {
   document.getElementById('bpanel-paste').classList.toggle('hidden', mode !== 'paste');
   document.getElementById('bpanel-file').classList.toggle('hidden', mode !== 'file');
 }
-
-// Single query form
-document.getElementById('single-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const fd = new FormData(e.target);
-  const body = Object.fromEntries(fd.entries());
-  const btn = document.getElementById('btn-single');
-  btn.disabled = true; btn.textContent = 'Downloading...';
-
-  showProgress();
-  try {
-    await streamDownload('/api/download', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
-  } finally {
-    btn.disabled = false; btn.textContent = 'Download';
-  }
-});
 
 // File drop zone
 const dropZone = document.getElementById('drop-zone');
@@ -387,24 +263,32 @@ function getBatchOpts() {
 }
 
 async function startBatch() {
+  // Validate FIRST, before touching the UI. Otherwise an empty input leaves
+  // the progress bar visible saying "Downloading..." forever.
+  let request;
+  if (batchMode === 'paste') {
+    const text = document.getElementById('paste-text').value.trim();
+    if (!text) { alert('Paste a list first.'); return; }
+    const body = { text, ...getBatchOpts() };
+    request = ['/api/paste', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) }];
+  } else {
+    if (!selectedFile) { alert('Select a file first.'); return; }
+    const fd = new FormData();
+    fd.append('file', selectedFile);
+    const opts = getBatchOpts();
+    Object.keys(opts).forEach(k => fd.append(k, opts[k]));
+    request = ['/api/upload', { method: 'POST', body: fd }];
+  }
+
   const btn = document.getElementById('btn-batch');
   btn.disabled = true; btn.textContent = 'Downloading...';
   showProgress();
 
   try {
-    if (batchMode === 'paste') {
-      const text = document.getElementById('paste-text').value.trim();
-      if (!text) { alert('Paste a list first.'); return; }
-      const body = { text, ...getBatchOpts() };
-      await streamDownload('/api/paste', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
-    } else {
-      if (!selectedFile) { alert('Select a file first.'); return; }
-      const fd = new FormData();
-      fd.append('file', selectedFile);
-      const opts = getBatchOpts();
-      Object.keys(opts).forEach(k => fd.append(k, opts[k]));
-      await streamDownload('/api/upload', { method: 'POST', body: fd });
-    }
+    await streamDownload(...request);
+  } catch (err) {
+    document.getElementById('progress-label').textContent = 'Failed: ' + (err && err.message ? err.message : 'unknown error');
+    console.error('batch download failed:', err);
   } finally {
     btn.disabled = false; btn.textContent = 'Download All';
   }

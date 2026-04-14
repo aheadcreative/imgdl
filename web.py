@@ -14,6 +14,8 @@ from imgdl import (
     DownloadOpts,
     PRODUCT_TYPES,
     QueryItem,
+    WINE_OUTPUT_H,
+    WINE_OUTPUT_W,
     WINE_TYPES,
     load_config,
     load_queries,
@@ -24,7 +26,9 @@ from imgdl import (
 
 
 def _build_opts(data: dict, is_form: bool = False) -> DownloadOpts:
-    """Build DownloadOpts from request data (JSON or form), with auto-defaults for wine types."""
+    """Build DownloadOpts from request data (JSON or form).
+    For wine type: force JPG + white background + 1200×900 canvas — these are
+    the only outputs the wine pipeline knows how to produce."""
     get = (lambda k, d=None: data.get(k, d)) if not is_form else (lambda k, d=None: data.get(k, d))
     try:
         size = parse_size(get("size", "300x300"))
@@ -32,13 +36,23 @@ def _build_opts(data: dict, is_form: bool = False) -> DownloadOpts:
         size = (300, 300)
 
     img_type = get("type") or None
+    is_wine = img_type in WINE_TYPES
+
+    if is_wine:
+        size = (WINE_OUTPUT_W, WINE_OUTPUT_H)
+        bg = "white"
+        fmt = "jpg"
+    else:
+        bg = get("background") or None
+        fmt = get("format", "png")
+
     min_src = 70 if img_type in (WINE_TYPES | PRODUCT_TYPES) else 0
 
     return DownloadOpts(
         size=size,
         type=img_type,
-        background=get("background") or None,
-        format=get("format", "png"),
+        background=bg,
+        format=fmt,
         count=max(1, min(int(get("count", 1)), 5)),
         padding=int(get("padding", 0)),
         output=str(DOWNLOAD_DIR),
